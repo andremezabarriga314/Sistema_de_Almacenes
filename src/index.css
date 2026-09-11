@@ -1,0 +1,258 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import 'tailwindcss';
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+}
+
+:root {
+  --background: #080B10;
+  --foreground: #E2E8F0;
+  --card: #0E1219;
+  --card-foreground: #E2E8F0;
+  --primary: #F5B21B;
+  --primary-foreground: #06111C;
+  --secondary: #141B24;
+  --secondary-foreground: #94A3B8;
+  --muted: #111620;
+  --muted-foreground: #64748B;
+  --accent: #F5B21B;
+  --accent-foreground: #06111C;
+  --border: #1A2232;
+  --ring: #F5B21B;
+  --radius: 6px;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+#root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+* {
+  font-family: 'Inter', sans-serif;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Outfit', sans-serif;
+}
+
+.font-mono, .tabular, code, .data-cell {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #1E2D3D;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2A3D52;
+}
+
+/* Table styling */
+.wms-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.wms-table th {
+  font-family: 'Outfit', sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #4B5A6B;
+  padding: 8px 12px;
+  border-bottom: 1px solid #1A2232;
+  text-align: left;
+  white-space: nowrap;
+}
+.wms-table td {
+  font-size: 12.5px;
+  padding: 9px 12px;
+  border-bottom: 1px solid #111620;
+  color: #B8C4CF;
+  white-space: nowrap;
+}
+.wms-table tr:hover td {
+  background: #0E1521;
+}
+.wms-table .num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: #D1D9E2;
+}
+
+/* Status badge */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  font-family: 'JetBrains Mono', monospace;
+}
+.badge-green { background: #2A2108; color: #F5B21B; border: 1px solid #5B430D; }
+.badge-red { background: #2A0E0E; color: #F87171; border: 1px solid #3D1414; }
+.badge-amber { background: #2A1E08; color: #FBBF24; border: 1px solid #3D2C10; }
+.badge-blue { background: #0A1A2E; color: #60A5FA; border: 1px solid #0D2240; }
+.badge-gray { background: #141A22; color: #64748B; border: 1px solid #1A2232; }
+
+/* Input fields */
+.wms-input {
+  background: #0A0F17;
+  border: 1px solid #1A2232;
+  border-radius: 5px;
+  color: #E2E8F0;
+  padding: 7px 10px;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.wms-input:focus {
+  border-color: #F5B21B;
+  box-shadow: 0 0 0 2px rgba(245, 178, 27, 0.1);
+}
+.wms-input::placeholder { color: #364556; }
+
+/* Select */
+.wms-select {
+  background: #0A0F17;
+  border: 1px solid #1A2232;
+  border-radius: 5px;
+  color: #E2E8F0;
+  padding: 7px 10px;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+.wms-select:focus { border-color: #F5B21B; }
+
+/* Buttons */
+.btn-primary {
+  background: #F5B21B;
+  color: #06111C;
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 8px 16px;
+  border-radius: 5px;
+  border: none;
+  cursor: pointer;
+  font-family: 'Outfit', sans-serif;
+  letter-spacing: 0.02em;
+  transition: background 0.15s, opacity 0.15s;
+}
+.btn-primary:hover { background: #FFC94A; }
+
+.btn-secondary {
+  background: #141B24;
+  color: #94A3B8;
+  font-weight: 500;
+  font-size: 12.5px;
+  padding: 8px 16px;
+  border-radius: 5px;
+  border: 1px solid #1A2232;
+  cursor: pointer;
+  font-family: 'Outfit', sans-serif;
+  transition: background 0.15s, color 0.15s;
+}
+.btn-secondary:hover { background: #1C2532; color: #E2E8F0; }
+
+.btn-danger {
+  background: #2A0E0E;
+  color: #F87171;
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 8px 16px;
+  border-radius: 5px;
+  border: 1px solid #3D1414;
+  cursor: pointer;
+  font-family: 'Outfit', sans-serif;
+  transition: background 0.15s;
+}
+.btn-danger:hover { background: #3D1414; }
+
+/* Card */
+.wms-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* Sidebar active */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 5px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #4B5A6B;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-decoration: none;
+  white-space: nowrap;
+  font-family: 'Outfit', sans-serif;
+}
+.nav-item:hover { background: #111620; color: #94A3B8; }
+.nav-item.active {
+  background: rgba(245, 178, 27, 0.1);
+  color: #F5B21B;
+  border-left: 2px solid #F5B21B;
+  margin-left: -2px;
+  padding-left: 14px;
+}
+.nav-group-label {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #2D3D4D;
+  padding: 4px 12px;
+  margin-top: 8px;
+  font-family: 'Outfit', sans-serif;
+}
+
+/* Alert */
+.alert-critical { background: #1E0808; border: 1px solid #3D1010; border-left: 3px solid #EF4444; }
+.alert-warning { background: #1A1008; border: 1px solid #3D2808; border-left: 3px solid #F59E0B; }
+.alert-info { background: #081418; border: 1px solid #0C2430; border-left: 3px solid #38BDF8; }

@@ -1,215 +1,199 @@
- 
-<div align="center">
+ <div align="center">
 
-# 📦 INAMBU WMS
-
-### Sistema de Gestión y Control de Almacén
-
-**Control de inventario, trazabilidad de lotes y gestión de movimientos en una aplicación de escritorio para Windows.**
-
-<br/>
+<img src="assets/inambu-banner.svg" width="100%" alt="INAMBU WMS"/>
 
 ![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=black)
-![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
-![Vite](https://img.shields.io/badge/Vite-7%2F8-646CFF?style=for-the-badge&logo=vite&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![Vite](https://img.shields.io/badge/Vite-646CFF?style=for-the-badge&logo=vite&logoColor=white)
 ![Tauri](https://img.shields.io/badge/Tauri-2-FFC131?style=for-the-badge&logo=tauri&logoColor=black)
+![Rust](https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white)
 
-<br/>
+**Sistema de Gestión y Control de Almacén para Windows**
 
-**Aplicación de escritorio · Windows · Gestión de inventarios**
+[Funcionalidades](#-funcionalidades) · [Arquitectura](#-arquitectura) · [Instalación](#-instalación)
 
 </div>
 
 ---
 
-## 📌 1. Acerca del proyecto
+## 🔷 Acerca del proyecto
 
-**INAMBU WMS** es un sistema de gestión de almacén desarrollado para optimizar el control y seguimiento de productos, lotes y movimientos de inventario.
+**INAMBU WMS** es una aplicación de escritorio desarrollada para gestionar las operaciones de almacén. Permite controlar productos, lotes, proveedores y movimientos de inventario, manteniendo la trazabilidad de las existencias.
 
-La aplicación permite administrar las existencias, registrar entradas y salidas, controlar fechas de vencimiento y mantener la trazabilidad de los productos mediante una interfaz de escritorio.
+Su objetivo es facilitar el registro, seguimiento y consulta de información mediante una interfaz moderna y herramientas de procesamiento de datos.
 
-El sistema está orientado a facilitar las operaciones de almacén, reducir errores en el registro de inventario y mejorar la organización de la información.
+## ⚡ Funcionalidades
 
-## ⚙️ 2. Funcionalidades principales
-
-| Módulo | Descripción |
+| Módulo | Funcionalidad |
 |---|---|
-| 📦 Productos | Registro, consulta y administración de productos. |
-| 🏷️ Lotes | Control de lotes, cantidades, fechas de producción y vencimiento. |
-| 🔄 Movimientos | Registro de entradas, salidas, ajustes y devoluciones. |
-| 🏢 Proveedores | Administración de proveedores y datos asociados. |
-| 📋 Kardex | Consulta del historial de movimientos y seguimiento de existencias. |
-| 📊 Excel | Importación y exportación de información mediante archivos Excel. |
-| 🗑️ Papelera | Administración de registros eliminados y recuperación de información. |
+| 📦 Productos | Registro y administración del catálogo de productos. |
+| 🏷️ Lotes | Control de cantidades, fechas y vencimientos. |
+| 🔄 Movimientos | Entradas, salidas, ajustes y devoluciones. |
+| 🏢 Proveedores | Administración de proveedores. |
+| 📋 Kardex | Historial y trazabilidad de movimientos. |
+| 📊 Excel | Importación y exportación de información. |
+| 🗑️ Papelera | Gestión de registros eliminados y recuperación. |
 
-## 🧠 3. Gestión inteligente del inventario
+## 🧠 Control de inventario
 
-El sistema incorpora funcionalidades para mantener la consistencia entre los productos y sus respectivos lotes.
+El sistema relaciona productos con sus lotes para realizar el seguimiento de las existencias.
 
-- Asociación de lotes con productos.
-- Actualización de existencias según los movimientos registrados.
-- Descuento de cantidades desde los lotes correspondientes.
-- Seguimiento de fechas de vencimiento.
-- Identificación de lotes vigentes, próximos a vencer y vencidos.
-- Consulta de movimientos para mantener la trazabilidad.
+- Control de cantidades disponibles.
+- Registro de fechas de producción y vencimiento.
+- Seguimiento de movimientos.
+- Identificación de lotes próximos a vencer.
+- Consulta del historial de inventario.
 
-### Control de vencimientos
+### Estados de lotes
 
 | Estado | Descripción |
 |---|---|
-| 🟢 Vigente | Producto dentro de su periodo de validez. |
-| 🟠 Por vencer | Producto próximo a alcanzar su fecha de vencimiento. |
-| 🔴 Vencido | Producto que superó su fecha de vencimiento. |
-| ⚫ Agotado | Lote sin existencias disponibles. |
+| 🟢 Vigente | Dentro de su periodo de validez. |
+| 🟠 Por vencer | Próximo a su fecha de vencimiento. |
+| 🔴 Vencido | Fecha de vencimiento superada. |
+| ⚫ Agotado | Sin existencias disponibles. |
 
-## 🔄 4. Control de movimientos
+## 🔄 Flujo de operaciones
 
-INAMBU WMS permite registrar diferentes operaciones relacionadas con el inventario:
+```mermaid
+flowchart TD
+ A["📥 Importación / Registro"] --> B["📦 Productos"]
+ B --> C["🏷️ Lotes"]
+ C --> D["📊 Existencias"]
+ D --> E["🔄 Movimientos"]
+ E --> F["📋 Kardex"]
+ F --> G["📤 Consulta y exportación"]
+```
 
-- **Entrada:** incrementa las existencias.
-- **Salida:** descuenta unidades del lote correspondiente.
-- **Ajuste:** permite regularizar cantidades.
-- **Devolución:** registra el retorno de productos.
+## 🏗️ Arquitectura
 
-Los movimientos permiten consultar información relacionada con el producto, lote, cantidad y operación realizada.
+```mermaid
+flowchart TB
+ subgraph FRONTEND["INTERFAZ"]
+  A["React"]
+  B["TypeScript"]
+  C["Componentes y páginas"]
+ end
+ subgraph LOGIC["LÓGICA"]
+  D["Context API"]
+  E["Procesamiento Excel"]
+ end
+ subgraph STORAGE["ALMACENAMIENTO LOCAL"]
+  F["LocalStorage"]
+  G["IndexedDB"]
+ end
+ subgraph DESKTOP["ESCRITORIO"]
+  H["Tauri 2"]
+  I["Rust"]
+ end
+ A --> B --> C --> D
+ D --> E
+ D --> F
+ D --> G
+ C --> H --> I
+```
 
-## 📊 5. Importación y exportación Excel
+## 🧰 Tecnologías
 
-El sistema incorpora herramientas para trabajar con archivos Excel y facilitar la gestión de información.
-
-**Importación:**
-- Lectura de hojas de cálculo.
-- Identificación de encabezados.
-- Procesamiento de información de productos y lotes.
-- Incorporación de datos al sistema.
-
-**Exportación:**
-- Generación de archivos Excel.
-- Descarga de información para revisión y respaldo.
-- Consulta de datos del inventario fuera de la aplicación.
-
-## 🏗️ 6. Arquitectura del proyecto
-
-El proyecto utiliza una arquitectura basada en tecnologías web para construir una aplicación de escritorio.
-
-| Tecnología | Responsabilidad |
+| Tecnología | Aplicación |
 |---|---|
-| React | Construcción de la interfaz de usuario. |
+| React 19 | Interfaz de usuario. |
 | TypeScript | Tipado y organización del código. |
-| Vite | Entorno de desarrollo y compilación frontend. |
-| Tauri 2 | Integración y empaquetado como aplicación de escritorio. |
-| Rust | Base nativa de la aplicación Tauri. |
-| Context API | Administración del estado global. |
-| IndexedDB | Almacenamiento de información y archivos importados. |
-| LocalStorage | Persistencia de información local. |
-| SheetJS (XLSX) | Lectura y procesamiento de Excel. |
-| Recharts | Visualización de información mediante gráficos. |
-| jsPDF | Generación de documentos PDF. |
+| Vite | Entorno de desarrollo. |
+| Tauri 2 | Aplicación de escritorio. |
+| Rust | Integración nativa. |
+| Context API | Estado global. |
+| IndexedDB | Almacenamiento local de archivos y datos. |
+| LocalStorage | Persistencia local. |
+| SheetJS | Procesamiento de Excel. |
+| Recharts | Gráficos y visualización. |
+| jsPDF | Generación de PDF. |
 
-### Organización general
+## 📁 Estructura del proyecto
 
 ```text
 INAMBU-WMS/
-│
 ├── src/
-│   ├── components/       # Componentes reutilizables
-│   ├── pages/            # Módulos y pantallas
-│   ├── store/            # Estado global y lógica de inventario
-│   ├── lib/              # Funciones auxiliares e importación
-│   ├── assets/           # Recursos gráficos
-│   ├── App.tsx           # Componente principal
-│   └── main.tsx          # Punto de entrada
+│   ├── components/
+│   ├── pages/
+│   ├── store/
+│   ├── lib/
+│   ├── assets/
+│   ├── App.tsx
+│   └── main.tsx
 │
 ├── src-tauri/
-│   ├── src/              # Código nativo Rust
-│   ├── icons/            # Iconos de la aplicación
-│   └── tauri.conf.json   # Configuración de Tauri
+│   ├── src/
+│   ├── icons/
+│   └── tauri.conf.json
 │
-├── public/               # Recursos públicos
-├── index.html
+├── public/
 ├── package.json
-├── tsconfig.json
 ├── vite.config.ts
 └── README.md
 ```
 
-## 💻 7. Instalación y ejecución
+## 💻 Instalación
 
-### Requisitos
+**Requisitos:** Node.js, pnpm, Rust y Cargo, además de los requisitos de compilación de Tauri para Windows.
 
-- Node.js.
-- pnpm.
-- Rust y Cargo.
-- Dependencias de compilación necesarias para Tauri en Windows.
-
-### Clonar el repositorio
+### 1. Clonar el repositorio
 
 ```bash
 git clone https://github.com/andremezabarriga314/Sistema_de_Almacenes.git
 cd Sistema_de_Almacenes
 ```
 
-### Instalar dependencias
+### 2. Instalar dependencias
 
 ```bash
 pnpm install
 ```
 
-### Ejecutar en modo desarrollo
-
-Para iniciar la aplicación de escritorio:
-
-```bash
-pnpm tauri dev
-```
-
-Para ejecutar solamente el frontend:
+### 3. Ejecutar el frontend
 
 ```bash
 pnpm dev
 ```
 
-## 📦 8. Generación del instalador
+### 4. Ejecutar la aplicación de escritorio
 
-Para compilar la aplicación de escritorio para Windows:
+```bash
+pnpm tauri dev
+```
+
+## 📦 Compilación para Windows
 
 ```bash
 pnpm tauri build
 ```
 
-Los instaladores generados se encuentran dentro de:
+Los instaladores y archivos de distribución se generan en:
 
 ```text
 src-tauri/target/release/bundle/
 ```
 
-La carpeta puede contener los formatos de distribución configurados para el proyecto, como MSI o instaladores EXE.
+## 🔐 Consideraciones
 
-## 🔐 9. Consideraciones técnicas
-
-- La aplicación está diseñada para ejecutarse como software de escritorio.
-- La información se administra mediante almacenamiento local.
-- Los archivos Excel importados se procesan para incorporar información al inventario.
-- La consistencia entre productos, lotes y movimientos es fundamental para el control de existencias.
-- Se recomienda realizar respaldos periódicos de la información.
-
-## 🎯 10. Objetivo del proyecto
-
-Desarrollar una herramienta tecnológica que facilite la administración de almacenes mediante el control organizado de productos, lotes, proveedores y movimientos, proporcionando información útil para el seguimiento del inventario y la toma de decisiones.
+- Aplicación diseñada para escritorio.
+- Utiliza almacenamiento local.
+- Los archivos Excel deben tener una estructura compatible con el procesamiento implementado.
+- Se recomienda realizar copias de seguridad periódicas.
 
 ---
 
 <div align="center">
 
-### 👨‍💻 Desarrollado por
+## 👨‍💻 Autor
 
 **ANDRÉ MEZA BARRIGA**
 
 Estudiante de Ingeniería de Software con Inteligencia Artificial
 
-[GitHub](https://github.com/andremezabarriga314) · [LinkedIn](https://linkedin.com/in/andremezabarriga)
+[![GitHub](https://img.shields.io/badge/GitHub-andremezabarriga314-181717?style=for-the-badge&logo=github)](https://github.com/andremezabarriga314)
 
-<br/>
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Perfil-0A66C2?style=for-the-badge&logo=linkedin)](https://linkedin.com/in/andremezabarriga)
 
 **INAMBU WMS — Gestión inteligente de almacenes**
 

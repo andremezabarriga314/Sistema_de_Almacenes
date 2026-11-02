@@ -1,0 +1,26 @@
+ <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360">
+<defs>
+<linearGradient id="bg" x2="1" y2="1"><stop stop-color="#071426"/><stop offset="0.55" stop-color="#11183d"/><stop offset="1" stop-color="#281044"/></linearGradient>
+<linearGradient id="n"><stop stop-color="#22d3ee"/><stop offset="0.5" stop-color="#3b82f6"/><stop offset="1" stop-color="#a78bfa"/></linearGradient>
+<pattern id="g" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#67e8f9" stroke-opacity=".12"/></pattern>
+</defs>
+<rect width="1200" height="360" rx="24" fill="url(#bg)"/>
+<rect width="1200" height="360" rx="24" fill="url(#g)"/>
+<circle cx="1000" cy="100" r="260" fill="#2563eb" opacity=".12"/>
+<g transform="translate(80 65)">
+<rect width="190" height="32" rx="16" fill="#0c2944" stroke="#22d3ee"/>
+<text x="18" y="21" fill="#a5f3fc" font-family="Arial" font-size="13" font-weight="bold">WAREHOUSE SYSTEM</text>
+<text x="0" y="130" fill="#fff" font-family="Arial" font-size="76" font-weight="bold">INAMBU</text>
+<text x="3" y="185" fill="url(#n)" font-family="Arial" font-size="46" font-weight="bold" letter-spacing="9">WMS</text>
+<path d="M0 207H440" stroke="url(#n)" stroke-width="3"/>
+<text x="0" y="245" fill="#cbd5e1" font-family="Arial" font-size="19">GESTIÓN INTELIGENTE DE ALMACENES</text>
+<text x="0" y="275" fill="#94a3b8" font-family="Arial" font-size="14" letter-spacing="2">INVENTARIO · LOTES · TRAZABILIDAD</text>
+</g>
+<g transform="translate(830 75)" stroke="#22d3ee" fill="#0b1e38" stroke-width="2">
+<path d="M0 30L100 0 200 30V170L100 205 0 170Z"/>
+<path d="M0 30L100 70 200 30M100 70V205" fill="none"/>
+<path d="M35 55L100 80 165 55M35 95L100 120 165 95M35 135L100 160 165 135" fill="none" stroke="#a78bfa"/>
+<circle cx="100" cy="70" r="5" fill="#22d3ee"/>
+</g>
+<rect x="1" y="1" width="1198" height="358" rx="23" fill="none" stroke="url(#n)" stroke-opacity=".6"/>
+</svg>

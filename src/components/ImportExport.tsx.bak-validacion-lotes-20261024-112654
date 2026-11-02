@@ -1,0 +1,923 @@
+import { useState, useRef } from "react";
+import * as XLSX from "xlsx";
+import { useApp } from "../store/AppContext";
+import {
+  exportProductControlExcel,
+  exportMovementsExcel,
+  exportSuppliersExcel,
+  exportLotsExcel,
+} from "../lib/exportExcel";
+import {
+  exportProductsPDF,
+  exportMovementsPDF,
+  exportSuppliersPDF,
+  exportLotsPDF,
+} from "../lib/exportPDF";
+
+// ── Lectura fiel de cada celda del Excel (sin cambiar valores ni fechas) ──
+const SSF = XLSX.SSF as unknown as {
+  format: (fmt: string, value: unknown) => string;
+  is_date: (fmt: string) => boolean;
+};
+
+// Formatos de fecha incorporados de Excel que dependen del idioma del sistema (m/d/yy ...)
+const LOCALE_DATE_FORMATS = ["m/d/yy", "mm-dd-yy", "m/d/yyyy", "mm/dd/yy", "mm/dd/yyyy", "d-mmm-yy", "dd-mmm-yy"];
+
+type CellInfo = {
+  shown: string; // tal como se ve en Excel
+  clean: string; // para importar al catálogo (fechas AAAA-MM-DD)
+  value: string | number; // valor original con su tipo
+  format: string | null; // formato numérico/fecha original
+};
+
+function toISODate(value: unknown): string {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+
+  const iso = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  const slash = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+
+  let year: number;
+  let month: number;
+  let day: number;
+
+  if (iso) {
+    year = Number(iso[1]);
+    month = Number(iso[2]);
+    day = Number(iso[3]);
+  } else if (slash) {
+    const first = Number(slash[1]);
+    const second = Number(slash[2]);
+    year = Number(slash[3]);
+    if (year < 100) year += year < 50 ? 2000 : 1900;
+
+    // Para este Excel: 6/25/26 = mes/día/año.
+    // Si el primer valor supera 12, se interpreta como día/mes/año.
+    month = first > 12 ? second : first;
+    day = first > 12 ? first : second;
+  } else {
+    return "";
+  }
+
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) return "";
+
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function readCell(cellObj: XLSX.CellObject | undefined): CellInfo {
+  if (!cellObj || cellObj.v === undefined || cellObj.v === null) {
+    return { shown: "", clean: "", value: "", format: null };
+  }
+
+  const z = typeof cellObj.z === "string" ? cellObj.z : undefined;
+
+  if (cellObj.t === "n" && typeof cellObj.v === "number") {
+    if (z && SSF.is_date(z)) {
+      const localeDependent = LOCALE_DATE_FORMATS.includes(z);
+      return {
+        shown: localeDependent ? SSF.format("dd/mm/yyyy", cellObj.v) : cellObj.w ?? SSF.format(z, cellObj.v),
+        clean: SSF.format("yyyy-mm-dd", cellObj.v),
+        value: cellObj.v,
+        format: localeDependent ? "dd/mm/yyyy" : z,
+      };
+    }
+    return {
+      shown: cellObj.w ?? String(cellObj.v),
+      clean: String(cellObj.v),
+      value: cellObj.v,
+      format: z && z !== "General" ? z : null,
+    };
+  }
+
+  if (cellObj.t === "b") {
+    const text = cellObj.v ? "VERDADERO" : "FALSO";
+    return { shown: text, clean: text, value: text, format: null };
+  }
+
+  const text = String(cellObj.w ?? cellObj.v);
+  return { shown: text, clean: text.replace(/^\t+|\t+$/g, "").trim(), value: String(cellObj.v), format: null };
+}
+
+type SheetData = {
+  headers: string[];
+  rows: string[][];
+  name: string;
+  previewRows: string[][];
+  columnCount: number;
+  values: (string | number)[][];
+  merges: { s: { r: number; c: number }; e: { r: number; c: number } }[];
+  colWidths: (number | null)[];
+  numFmts: [number, number, string][];
+};
+
+type ExportAction = { label: string; fn: () => void };
+type ExportCard = {
+  label: string;
+  desc: string;
+  icon: string;
+  color: string;
+  actions: ExportAction[];
+};
+
+function columnName(index: number): string {
+  let result = "";
+  let value = index + 1;
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    result = String.fromCharCode(65 + remainder) + result;
+    value = Math.floor((value - 1) / 26);
+  }
+  return result;
+}
+
+export default function ImportExport() {
+  const {
+    products, movements, suppliers, lots,
+    addProduct, updateProduct, seeded, seedAll,
+    saveImportedExcelSheets, importLots,
+  } = useApp();
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const [tab, setTab] = useState<"import" | "export">("import");
+  const [sheets, setSheets] = useState<SheetData[]>([]);
+  const [activeSheet, setActiveSheet] = useState(0);
+  const [fileName, setFileName] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{ created: number; updated: number; errors: number } | null>(null);
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    setImportResult(null);
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const buffer = ev.target!.result as ArrayBuffer;
+      const data = new Uint8Array(buffer);
+      // Sin conversión de fechas: cada celda se lee con su valor y formato originales
+      const wb = XLSX.read(data, { type: "array", cellNF: true, cellStyles: true });
+      const parsed: SheetData[] = wb.SheetNames.map((name) => {
+        const ws = wb.Sheets[name];
+        const range = ws["!ref"] ? XLSX.utils.decode_range(ws["!ref"]) : null;
+        // Siempre desde A1, para conservar la posición exacta de cada dato
+        const rowCount = range ? range.e.r + 1 : 0;
+        const columnCount = range ? range.e.c + 1 : 1;
+
+        const previewRows: string[][] = [];
+        const clean: string[][] = [];
+        const values: (string | number)[][] = [];
+        const numFmts: [number, number, string][] = [];
+
+        for (let r = 0; r < rowCount; r++) {
+          const shownRow: string[] = [];
+          const cleanRow: string[] = [];
+          const valueRow: (string | number)[] = [];
+          for (let c = 0; c < columnCount; c++) {
+            const info = readCell(ws[XLSX.utils.encode_cell({ r, c })] as XLSX.CellObject | undefined);
+            shownRow.push(info.shown);
+            cleanRow.push(info.clean);
+            valueRow.push(info.value);
+            if (info.format) numFmts.push([r, c, info.format]);
+          }
+          previewRows.push(shownRow);
+          clean.push(cleanRow);
+          values.push(valueRow);
+        }
+
+        // Detectar la fila de encabezados reales, incluso si antes hay títulos generales.
+        const filled = (row: string[]) => row.filter((c) => c.trim() !== "").length;
+        const normalizeCell = (value: string) =>
+          String(value ?? "")
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .toLocaleLowerCase()
+            .replace(/[^a-z0-9]+/g, " ")
+            .trim();
+
+        const headerTerms = [
+          "producto", "alimento", "marca", "presentacion",
+          "lote", "vencimiento", "produccion", "cantidad",
+          "unidades", "saldo", "proveedor", "ingreso",
+          "sku", "codigo", "fecha de recepcion"
+        ];
+
+        const scoreHeader = (row: string[]) => {
+          const cells = row.map(normalizeCell);
+          return headerTerms.reduce(
+            (score, term) =>
+              score + (cells.some((cell) => cell === term || cell.includes(term)) ? 1 : 0),
+            0
+          );
+        };
+
+        let hRow = 0;
+        let bestScore = -1;
+        for (let i = 0; i < Math.min(clean.length, 20); i++) {
+          const score = scoreHeader(clean[i]);
+          if (filled(clean[i]) >= 3 && score > bestScore) {
+            bestScore = score;
+            hRow = i;
+          }
+        }
+
+        const headers = clean[hRow] || [];
+        const rows = clean.slice(hRow + 1).filter((row) => filled(row) > 0);
+
+        const merges = ((ws["!merges"] as XLSX.Range[] | undefined) || [])
+          .map((m) => ({ s: { r: m.s.r, c: m.s.c }, e: { r: m.e.r, c: m.e.c } }))
+          .filter((m) => m.e.r < rowCount && m.e.c < columnCount);
+
+        const wsCols = (ws["!cols"] as XLSX.ColInfo[] | undefined) || [];
+        const colWidths = Array.from({ length: columnCount }, (_, i) => {
+          const col = wsCols[i];
+          return col?.wch ?? (col?.wpx ? Math.round(col.wpx / 7) : null);
+        });
+
+        return { name, headers, rows, previewRows, columnCount, values, merges, colWidths, numFmts };
+      });
+      setSheets(parsed);
+      setActiveSheet(0);
+      // Guarda el archivo completo, tal como se ve en Excel, para mostrarlo en Productos
+      saveImportedExcelSheets(
+        file.name,
+        parsed.map((sh) => ({
+          name: sh.name,
+          headers: sh.headers,
+          rows: sh.previewRows,
+          values: sh.values,
+          merges: sh.merges,
+          colWidths: sh.colWidths,
+          numFmts: sh.numFmts,
+        })),
+        buffer
+      );
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const doImport = () => {
+    const sheet = sheets[activeSheet];
+    if (!sheet) return;
+    setImporting(true);
+    let created = 0,
+      updated = 0,
+      errors = 0;
+    const normalizeHeader = (value: unknown) =>
+      String(value ?? "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLocaleLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim();
+
+    const h = sheet.headers.map(normalizeHeader);
+
+    const get = (row: string[], ...keys: string[]) => {
+      for (const key of keys) {
+        const normalizedKey = normalizeHeader(key);
+        const idx = h.findIndex((header) => header === normalizedKey);
+        if (idx >= 0 && String(row[idx] ?? "").trim() !== "") {
+          return String(row[idx]).trim();
+        }
+      }
+
+      for (const key of keys) {
+        const normalizedKey = normalizeHeader(key);
+        const idx = h.findIndex((header) => {
+          if (!header.includes(normalizedKey)) return false;
+          if (normalizedKey === "lote" && /^(id|codigo|cod) lote$/.test(header)) {
+            return false;
+          }
+          return true;
+        });
+
+        if (idx >= 0 && String(row[idx] ?? "").trim() !== "") {
+          return String(row[idx]).trim();
+        }
+      }
+
+      return "";
+    };
+
+    const normalizedSheetName = sheet.name
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLocaleLowerCase()
+      .trim();
+
+    const hasLotColumn = h.some((header) => /\blote\b/.test(header) || header === "n de lote");
+    const hasExpiryColumn = h.some((header) => header.includes("vencimiento") || header.includes("caducidad"));
+    const hasProductColumn = h.some((header) => /producto|alimento/.test(header));
+    const hasQuantityColumn = h.some((header) => /cantidad|unidades|saldo|ingreso/.test(header));
+
+    if (
+      /\blotes?\b/.test(normalizedSheetName) ||
+      (hasLotColumn && hasExpiryColumn && hasProductColumn && hasQuantityColumn)
+    ) {
+      const lotRows: Parameters<typeof importLots>[0] = [];
+
+      sheet.rows.forEach((row) => {
+        try {
+          const lotSku = get(row, "sku", "codigo", "código", "code", "cód");
+          const lotName = get(row, "nombre", "producto", "alimento programado", "nombre del producto", "nombre del alimento", "alimento", "descripcion", "descripción");
+          const normalizedLotName = normalizeHeader(lotName);
+
+          const productBySku = lotSku
+            ? products.find(
+                (item) =>
+                  item.sku.trim().toLocaleLowerCase() ===
+                  lotSku.trim().toLocaleLowerCase()
+              )
+            : undefined;
+
+          const nameMatches = normalizedLotName
+            ? products.filter((item) => {
+                const normalizedProductName = normalizeHeader(item.name);
+                return (
+                  normalizedProductName === normalizedLotName ||
+                  normalizedProductName.startsWith(normalizedLotName + " ") ||
+                  normalizedLotName.startsWith(normalizedProductName + " ")
+                );
+              })
+            : [];
+
+          const product = productBySku ||
+            (nameMatches.length === 1 ? nameMatches[0] : undefined);
+
+          const lotNumber = get(row, "numero de lote", "num lote", "n lote", "n de lote", "lote numero", "numero lote", "lot number", "lot");
+          const productionDate = toISODate(get(row, "fecha de produccion", "fecha de producción", "produccion", "producción", "fabricacion", "fabricación"));
+          const expiryDate = toISODate(get(row, "fecha de vencimiento", "fechade vencimiento", "fecha vencimiento", "vencimiento", "vence", "expiry", "caducidad"));
+          const qtyText = get(row, "cantidad unidades", "cantidad", "unidades", "stock", "qty", "saldo", "ingreso");
+          const qty = Number(qtyText.replace(/,/g, ""));
+          const supplierName = get(row, "proveedor", "supplier");
+
+          const normalizeSupplierName = (value: string) =>
+            value
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .toLocaleLowerCase("es-PE")
+              .replace(/[^a-z0-9]/g, "");
+
+          const supplierKey = normalizeSupplierName(supplierName);
+          const supplier = supplierKey
+            ? suppliers.find(
+                (item) =>
+                  normalizeSupplierName(item.name) === supplierKey
+              )
+            : undefined;
+
+          if (
+            !product ||
+            !lotNumber.trim() ||
+            !productionDate.trim() ||
+            !expiryDate.trim() ||
+            !Number.isInteger(qty) ||
+            qty <= 0 ||
+            false
+          ) {
+            errors++;
+            return;
+          }
+
+          lotRows.push({
+            productId: product.id,
+            lotNumber: lotNumber.trim(),
+            productionDate: productionDate.trim(),
+            expiryDate: expiryDate.trim(),
+            qty,
+            receivedDate: toISODate(get(row, "fecha de ingreso", "fecha ingreso")) || undefined,
+            supplierId: supplier?.id,
+          });
+        } catch {
+          errors++;
+        }
+      });
+
+      try {
+        if (lotRows.length > 0) {
+          const result = importLots(lotRows);
+          created = result.created;
+          updated = 0;
+        }
+      } catch (error) {
+        console.error("Error al importar lotes:", error);
+        errors += lotRows.length;
+        window.alert(
+          "No se pudieron importar los lotes.\n\n" +
+          (error instanceof Error ? error.message : String(error)) +
+          "\n\nRevisa que el producto exista, que no haya lotes duplicados y que las cantidades coincidan con el stock disponible."
+        );
+      }
+
+      setImportResult({ created, updated, errors });
+      setImporting(false);
+      return;
+    }
+
+    sheet.rows.forEach((row) => {
+      try {
+        const sku = get(row, "sku", "codigo", "code", "cód");
+        const name = get(row, "nombre", "name", "alimento", "producto", "descripcion");
+        if (!sku && !name) return;
+        const existing = products.find((p) => p.sku === sku || p.name === name);
+
+        const qty = parseInt(get(row, "stock", "cantidad", "qty", "saldo")) || 0;
+        const lotNumber = get(row, "lote", "lot");
+        const productionDate = get(row, "produccion", "producción", "fabricacion", "fabricación");
+        const expiryDate = get(row, "vencimiento", "vence", "expiry", "caducidad");
+        const hasLot = qty > 0 && !!lotNumber && !!productionDate && !!expiryDate;
+
+        const supplierName = get(row, "proveedor", "supplier");
+        const matchedSupplier = suppliers.find(
+          (supplier) =>
+            supplier.name.trim().toLocaleLowerCase() ===
+            supplierName.trim().toLocaleLowerCase()
+        );
+
+        const base = {
+          sku: sku || name.slice(0, 12).toUpperCase().replace(/\s+/g, "-"),
+          name: name || sku,
+          brand: get(row, "marca", "brand") || existing?.brand || "",
+          presentation:
+            get(row, "presentacion", "presentación", "empaque", "formato") ||
+            existing?.presentation ||
+            "",
+          gramsPerUnit:
+            parseFloat(get(row, "gramos", "gramaje", "peso")) ||
+            existing?.gramsPerUnit ||
+            undefined,
+          costPrice: parseFloat(get(row, "costo", "cost", "precio costo", "unitcost")) || existing?.costPrice || 0,
+          salePrice: parseFloat(get(row, "venta", "sale", "precio venta")) || existing?.salePrice || 0,
+          unit: get(row, "unidad", "unit") || existing?.unit || "Unidad",
+          location: get(row, "ubicacion", "location") || existing?.location || "",
+          supplierId: matchedSupplier?.id || existing?.supplierId || "",
+          status: (get(row, "estado", "status") || existing?.status || "Activo") as "Activo" | "Inactivo",
+          storageTemp: get(row, "temperatura", "temp", "almac") || existing?.storageTemp || "Ambiente (15–25 °C)",
+        };
+
+        if (existing) {
+          // El stock de un producto existente no se toca: solo cambia con movimientos
+          updateProduct(existing.id, base);
+          updated++;
+        } else if (hasLot) {
+          addProduct(
+            { ...base, stock: qty },
+            { lotNumber, productionDate, expiryDate, qty }
+          );
+          created++;
+        } else {
+          addProduct({ ...base, stock: 0 });
+          created++;
+        }
+      } catch {
+        errors++;
+      }
+    });
+
+    setImportResult({ created, updated, errors });
+    setImporting(false);
+  };
+
+  const sheet = sheets[activeSheet];
+
+  const exportCards: ExportCard[] = [
+    {
+      label: "Control de productos",
+      desc: "Inventario, historial, ingresos y salidas por lote",
+      icon: "⊞",
+      color: "#00C896",
+      actions: [
+        { label: "Todo", fn: () => exportProductControlExcel(products, movements, lots, suppliers) },
+        { label: "Ingresos", fn: () => exportProductControlExcel(products, movements, lots, suppliers, "Entrada") },
+        { label: "Salidas", fn: () => exportProductControlExcel(products, movements, lots, suppliers, "Salida") },
+        { label: "PDF", fn: () => exportProductsPDF(products, suppliers) },
+      ],
+    },
+    {
+      label: "Movimientos",
+      desc: "Entradas, salidas y ajustes con lotes",
+      icon: "≡",
+      color: "#38BDF8",
+      actions: [
+        { label: "Excel (.xlsx)", fn: () => exportMovementsExcel(movements, "Movimientos", suppliers) },
+        { label: "PDF", fn: () => exportMovementsPDF(movements, suppliers, "Movimientos", products) },
+      ],
+    },
+    {
+      label: "Lotes",
+      desc: "Control de lotes y vencimientos",
+      icon: "◫",
+      color: "#A78BFA",
+      actions: [
+        { label: "Excel (.xlsx)", fn: () => exportLotsExcel(lots, suppliers) },
+        { label: "PDF", fn: () => exportLotsPDF(lots) },
+      ],
+    },
+    {
+      label: "Proveedores",
+      desc: "Directorio completo de proveedores",
+      icon: "◈",
+      color: "#FBBF24",
+      actions: [
+        { label: "Excel (.xlsx)", fn: () => exportSuppliersExcel(suppliers) },
+        { label: "PDF", fn: () => exportSuppliersPDF(suppliers) },
+      ],
+    },
+  ];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+      {/* Header */}
+      <div style={{ padding: "20px 24px 0", borderBottom: "1px solid #111820", flexShrink: 0 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <div>
+            <h1 style={{ fontFamily: "Outfit, sans-serif", fontSize: 20, fontWeight: 700, color: "#E2E8F0" }}>
+              Importar / Exportar
+            </h1>
+            <div style={{ fontSize: 11, color: "#4B5A6B", fontFamily: "JetBrains Mono" }}>
+              Gestión de archivos Excel y PDF
+            </div>
+          </div>
+          {!seeded && (
+            <button
+              className="btn-primary"
+              style={{ fontSize: 12, background: "#A78BFA", border: "none" }}
+              onClick={seedAll}
+            >
+              ⚡ Cargar datos de ejemplo (CALLERÍA 5 2026)
+            </button>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 0 }}>
+          {(["import", "export"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: "8px 20px",
+                fontSize: 13,
+                fontFamily: "Outfit, sans-serif",
+                fontWeight: 600,
+                color: tab === t ? "#00C896" : "#4B5A6B",
+                borderBottom: tab === t ? "2px solid #00C896" : "2px solid transparent",
+                marginBottom: -1,
+              }}
+            >
+              {t === "import" ? "Importar Excel" : "Exportar Reportes"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+        {tab === "export" ? (
+          /* ── EXPORT TAB ── */
+          <div style={{ flex: 1, overflowY: "auto", padding: 24 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
+              {exportCards.map((card) => (
+                <div key={card.label} className="wms-card" style={{ padding: 18 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                    <div
+                      style={{
+                        width: 34,
+                        height: 34,
+                        borderRadius: 7,
+                        background: card.color + "1A",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: 16,
+                        color: card.color,
+                      }}
+                    >
+                      {card.icon}
+                    </div>
+                    <div>
+                      <div style={{ fontFamily: "Outfit", fontSize: 13, fontWeight: 700, color: "#E2E8F0" }}>
+                        {card.label}
+                      </div>
+                      <div style={{ fontSize: 10.5, color: "#4B5A6B" }}>{card.desc}</div>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {card.actions.map((a) => (
+                      <button
+                        key={a.label}
+                        className="btn-secondary"
+                        style={{ fontSize: 11, padding: "5px 12px" }}
+                        onClick={a.fn}
+                        disabled={products.length === 0 && movements.length === 0}
+                      >
+                        {a.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div
+              style={{
+                marginTop: 16,
+                padding: "10px 14px",
+                background: "#08120E",
+                border: "1px solid #0D3D26",
+                borderLeft: "3px solid #00C896",
+                borderRadius: 5,
+              }}
+            >
+              <span style={{ fontSize: 11, color: "#4B5A6B" }}>
+                Los archivos Excel incluyen múltiples hojas: RESUMEN con KPIs, datos detallados, valoración y alertas críticas.
+              </span>
+            </div>
+          </div>
+        ) : (
+          /* ── IMPORT TAB ── */
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            {/* Drop zone */}
+            <div
+              style={{
+                padding: "16px 24px",
+                borderBottom: "1px solid #111820",
+                flexShrink: 0,
+                display: "flex",
+                gap: 12,
+                alignItems: "center",
+              }}
+            >
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                style={{ display: "none" }}
+                onChange={handleFile}
+              />
+              <button className="btn-primary" onClick={() => fileRef.current?.click()}>
+                Seleccionar archivo Excel
+              </button>
+              {fileName && (
+                <span style={{ fontSize: 12, color: "#00C896", fontFamily: "JetBrains Mono" }}>
+                  {fileName} — {sheets.length} hoja{sheets.length !== 1 ? "s" : ""}
+                </span>
+              )}
+              {sheet && !importResult && (
+                <button
+                  className="btn-secondary"
+                  style={{ marginLeft: "auto", fontSize: 12 }}
+                  onClick={doImport}
+                  disabled={importing}
+                >
+                  {importing ? "Importando..." : `Importar hoja "${sheet.name}" al catálogo`}
+                </button>
+              )}
+            </div>
+
+            {importResult && (
+              <div
+                style={{
+                  padding: "10px 24px",
+                  flexShrink: 0,
+                  background: "#08120E",
+                  borderBottom: "1px solid #111820",
+                }}
+              >
+                <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: "#00C896" }}>✓ Importación completada:</span>
+                  <span style={{ fontSize: 12, color: "#34D399", fontFamily: "JetBrains Mono" }}>
+                    {importResult.created} creados
+                  </span>
+                  <span style={{ fontSize: 12, color: "#38BDF8", fontFamily: "JetBrains Mono" }}>
+                    {importResult.updated} actualizados
+                  </span>
+                  {importResult.errors > 0 && (
+                    <span style={{ fontSize: 12, color: "#F87171", fontFamily: "JetBrains Mono" }}>
+                      {importResult.errors} errores
+                    </span>
+                  )}
+                  <button
+                    className="btn-secondary"
+                    style={{ fontSize: 11, marginLeft: "auto" }}
+                    onClick={() => setImportResult(null)}
+                  >
+                    Nueva importación
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {sheets.length > 0 && (
+              <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+                {/* Sheet selector */}
+                <div style={{ width: 180, borderRight: "1px solid #111820", overflowY: "auto", flexShrink: 0 }}>
+                  <div
+                    style={{
+                      padding: "10px 12px 6px",
+                      fontSize: 9.5,
+                      color: "#2D4050",
+                      fontFamily: "Outfit",
+                      fontWeight: 700,
+                      letterSpacing: "0.08em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    HOJAS ({sheets.length})
+                  </div>
+                  {sheets.map((s, i) => (
+                    <button
+                      key={s.name}
+                      onClick={() => setActiveSheet(i)}
+                      style={{
+                        width: "100%",
+                        background: activeSheet === i ? "rgba(0,200,150,0.08)" : "none",
+                        border: "none",
+                        borderLeft: activeSheet === i ? "2px solid #00C896" : "2px solid transparent",
+                        padding: "8px 12px",
+                        cursor: "pointer",
+                        textAlign: "left",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 12,
+                          fontFamily: "Outfit",
+                          fontWeight: 600,
+                          color: activeSheet === i ? "#00C896" : "#94A3B8",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {s.name}
+                      </div>
+                      <div style={{ fontSize: 10, color: "#4B5A6B", fontFamily: "JetBrains Mono" }}>
+                        {s.previewRows.length} filas · {s.columnCount} cols
+                      </div>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Sheet viewer */}
+                {sheet && (
+                  <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                    {/* Sheet meta */}
+                    <div
+                      style={{
+                        padding: "10px 16px",
+                        borderBottom: "1px solid #111820",
+                        flexShrink: 0,
+                        display: "flex",
+                        gap: 20,
+                        alignItems: "center",
+                      }}
+                    >
+                      <div style={{ fontFamily: "Outfit", fontSize: 13, fontWeight: 700, color: "#E2E8F0" }}>
+                        {sheet.name}
+                      </div>
+                      <div style={{ fontSize: 11, color: "#4B5A6B", fontFamily: "JetBrains Mono" }}>
+                        {sheet.previewRows.length} filas · {sheet.columnCount} columnas
+                      </div>
+                      <div style={{ marginLeft: "auto", fontSize: 10.5, color: "#00C896" }}>
+                        Vista original del archivo
+                      </div>
+                    </div>
+
+                    {/* Data table */}
+                    <div style={{ flex: 1, overflowX: "auto", overflowY: "auto" }}>
+                      <table style={{ width: "max-content", minWidth: "100%", borderCollapse: "collapse" }}>
+                        <thead style={{ position: "sticky", top: 0, background: "#0A0F16", zIndex: 2 }}>
+                          <tr>
+                            <th
+                              style={{
+                                padding: "8px 10px",
+                                fontSize: 9.5,
+                                fontFamily: "JetBrains Mono",
+                                color: "#2D4050",
+                                borderBottom: "1px solid #1A2232",
+                                textAlign: "left",
+                                minWidth: 36,
+                              }}
+                            >
+                              #
+                            </th>
+                            {Array.from({ length: sheet.columnCount }, (_, i) => (
+                              <th
+                                key={i}
+                                style={{
+                                  padding: "8px 12px",
+                                  fontSize: 10,
+                                  fontFamily: "Outfit",
+                                  fontWeight: 700,
+                                  color: "#4B5A6B",
+                                  borderBottom: "1px solid #1A2232",
+                                  textAlign: "left",
+                                  whiteSpace: "nowrap",
+                                  letterSpacing: "0.05em",
+                                  textTransform: "uppercase",
+                                  minWidth: 110,
+                                }}
+                              >
+                                {columnName(i)}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sheet.previewRows.map((row, ri) => (
+                            <tr key={ri} style={{ background: ri % 2 === 0 ? "transparent" : "#09111A" }}>
+                              <td
+                                style={{
+                                  padding: "7px 10px",
+                                  fontSize: 10,
+                                  color: "#2D4050",
+                                  borderBottom: "1px solid #0D1520",
+                                  fontFamily: "JetBrains Mono",
+                                  textAlign: "right",
+                                }}
+                              >
+                                {ri + 1}
+                              </td>
+                              {Array.from({ length: sheet.columnCount }, (_, ci) => {
+                                const val = row[ci] || "";
+                                const isDate = /^\d{4}-\d{2}-\d{2}$/.test(val);
+                                const isNum = !isDate && val !== "" && !isNaN(Number(val));
+                                const isLot = /^(LOT|LOTE|KTF|SFB|GQ|GK|LT|[A-Z]{1,4}\d)/i.test(val) && val.length > 3;
+                                return (
+                                  <td
+                                    key={ci}
+                                    style={{
+                                      padding: "7px 12px",
+                                      fontSize: 11.5,
+                                      borderBottom: "1px solid #0D1520",
+                                      fontFamily: isNum || isDate ? "JetBrains Mono" : "Inter, sans-serif",
+                                      color: isDate ? "#00C896" : isLot ? "#A78BFA" : isNum ? "#94A3B8" : "#D1D9E2",
+                                      whiteSpace: "nowrap",
+                                      maxWidth: 220,
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                    }}
+                                  >
+                                    {val}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {sheets.length === 0 && (
+              <div
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 16,
+                }}
+              >
+                <div
+                  style={{
+                    width: 60,
+                    height: 60,
+                    borderRadius: 12,
+                    background: "#0A1218",
+                    border: "2px dashed #1A2232",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 24,
+                    color: "#2D4050",
+                  }}
+                >
+                  ⇅
+                </div>
+                <div style={{ fontFamily: "Outfit", fontSize: 14, fontWeight: 600, color: "#4B5A6B" }}>
+                  Selecciona un archivo Excel (.xlsx)
+                </div>
+                <div style={{ fontSize: 11, color: "#2D4050", textAlign: "center", maxWidth: 340 }}>
+                  El sistema detecta automáticamente todas las hojas, columnas y tipos de datos. Compatible con cualquier estructura de Excel.
+                </div>
+                <button className="btn-secondary" style={{ fontSize: 12 }} onClick={() => fileRef.current?.click()}>
+                  Explorar archivos
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

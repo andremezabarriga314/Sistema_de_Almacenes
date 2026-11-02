@@ -1,16 +1,10 @@
-import { useAuth } from "../store/AuthContext";
 import { useState } from "react";
 
 type Page =
-  | "dashboard"
   | "products"
-  | "entries"
-  | "exits"
   | "lots"
   | "kardex"
   | "suppliers"
-  | "adjustments"
-  | "reports"
   | "import"
   | "audit"
   | "trash";
@@ -24,19 +18,10 @@ type Props = {
 
 const nav = [
   {
-    group: "Principal",
-    items: [
-      { id: "dashboard", label: "Dashboard", icon: "⬡" },
-    ],
-  },
-  {
     group: "Inventario",
     items: [
       { id: "products", label: "Alimentos", icon: "⊞" },
-      { id: "entries", label: "Entradas", icon: "↓" },
-      { id: "exits", label: "Salidas", icon: "↑" },
       { id: "lots", label: "Lotes", icon: "◫" },
-      { id: "adjustments", label: "Ajustes", icon: "⊡" },
       { id: "kardex", label: "Kárdex", icon: "≡" },
     ],
   },
@@ -44,7 +29,6 @@ const nav = [
     group: "Gestión",
     items: [
       { id: "suppliers", label: "Proveedores", icon: "◈" },
-      { id: "reports", label: "Reportes", icon: "⊠" },
     ],
   },
   {
@@ -58,15 +42,6 @@ const nav = [
 ];
 
 export default function Sidebar({ current, onNavigate, collapsed, onToggle }: Props) {
-  const { user } = useAuth();
-  const userName = user?.name || "Usuario";
-  const userInitials = userName
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0].toUpperCase())
-    .join("");
-
   return (
     <aside
       style={{
@@ -95,7 +70,7 @@ export default function Sidebar({ current, onNavigate, collapsed, onToggle }: Pr
           style={{
             width: 28,
             height: 28,
-            background: "linear-gradient(135deg, #F5B21B 0%, #8A5A00 100%)",
+            background: "linear-gradient(135deg, #00C896 0%, #007C5E 100%)",
             borderRadius: 6,
             display: "flex",
             alignItems: "center",
@@ -104,7 +79,7 @@ export default function Sidebar({ current, onNavigate, collapsed, onToggle }: Pr
             fontFamily: "JetBrains Mono, monospace",
             fontSize: 13,
             fontWeight: 700,
-            color: "#06111C",
+            color: "#050A07",
           }}
         >
           W
@@ -112,10 +87,10 @@ export default function Sidebar({ current, onNavigate, collapsed, onToggle }: Pr
         {!collapsed && (
           <div>
             <div style={{ fontFamily: "Outfit, sans-serif", fontSize: 13, fontWeight: 700, color: "#E2E8F0", lineHeight: 1.2 }}>
-              INAMBU
+              FoodStock Pro
             </div>
             <div style={{ fontSize: 9.5, color: "#2D4050", fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.06em" }}>
-              SISTEMA DE ALMACENES
+              v1.0 · ALIMENTOS
             </div>
           </div>
         )}
@@ -188,17 +163,17 @@ export default function Sidebar({ current, onNavigate, collapsed, onToggle }: Pr
             justifyContent: "center",
             fontSize: 11,
             fontWeight: 700,
-            color: "#F5B21B",
+            color: "#00C896",
             flexShrink: 0,
             fontFamily: "Outfit, sans-serif",
           }}
         >
-          {userInitials}
+          LM
         </div>
         {!collapsed && (
           <div style={{ overflow: "hidden" }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: "#94A3B8", whiteSpace: "nowrap", fontFamily: "Outfit, sans-serif" }}>
-              {userName}
+              Luis Mendoza
             </div>
             <div style={{ fontSize: 10, color: "#2D4050", fontFamily: "JetBrains Mono, monospace" }}>Admin</div>
           </div>

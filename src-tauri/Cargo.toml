@@ -23,3 +23,10 @@ tauri = { version = "2.11.3", default-features = false, features = [ "wry" ] }
 tauri-plugin-log = "2"
 thiserror = "1.0.60"
 getrandom = "0.2.14"
+
+[profile.release]
+opt-level = 1
+codegen-units = 16
+lto = false
+debug = false
+incremental = false

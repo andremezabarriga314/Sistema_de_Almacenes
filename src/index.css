@@ -1,6 +1,8 @@
+
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+
 @import 'tailwindcss';
 
 @theme inline {
@@ -24,6 +26,9 @@
 }
 
 :root {
+  font-family: 'Inter', sans-serif;
+  color-scheme: dark;
+
   --background: #080B10;
   --foreground: #E2E8F0;
   --card: #0E1219;
@@ -39,57 +44,106 @@
   --border: #1A2232;
   --ring: #F5B21B;
   --radius: 6px;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
 }
 
 html {
-  height: 100%;
-}
-
-body {
-  height: 100%;
-  margin: 0;
   overflow: hidden;
 }
 
+body {
+  overflow: hidden;
+  background: var(--background);
+  color: var(--foreground);
+}
+
 #root {
-  height: 100%;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
-* {
-  font-family: 'Inter', sans-serif;
+button,
+input,
+select,
+textarea {
+  max-width: 100%;
+  font: inherit;
 }
 
-h1, h2, h3, h4, h5, h6 {
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+img,
+svg,
+video,
+canvas {
+  max-width: 100%;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
   font-family: 'Outfit', sans-serif;
 }
 
-.font-mono, .tabular, code, .data-cell {
+.font-mono,
+.tabular,
+code,
+.data-cell {
   font-family: 'JetBrains Mono', monospace;
 }
 
-/* Custom scrollbar */
+/* Desplazamiento */
 ::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+  width: 6px;
+  height: 6px;
 }
+
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
 ::-webkit-scrollbar-thumb {
   background: #1E2D3D;
-  border-radius: 2px;
+  border-radius: 4px;
 }
+
 ::-webkit-scrollbar-thumb:hover {
   background: #2A3D52;
 }
 
-/* Table styling */
+/* Tablas */
 .wms-table {
   width: 100%;
+  max-width: 100%;
   border-collapse: collapse;
 }
+
 .wms-table th {
   font-family: 'Outfit', sans-serif;
   font-size: 10px;
@@ -102,6 +156,7 @@ h1, h2, h3, h4, h5, h6 {
   text-align: left;
   white-space: nowrap;
 }
+
 .wms-table td {
   font-size: 12.5px;
   padding: 9px 12px;
@@ -109,16 +164,18 @@ h1, h2, h3, h4, h5, h6 {
   color: #B8C4CF;
   white-space: nowrap;
 }
+
 .wms-table tr:hover td {
   background: #0E1521;
 }
+
 .wms-table .num {
   font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
   color: #D1D9E2;
 }
 
-/* Status badge */
+/* Estados */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -130,14 +187,41 @@ h1, h2, h3, h4, h5, h6 {
   letter-spacing: 0.04em;
   font-family: 'JetBrains Mono', monospace;
 }
-.badge-green { background: #2A2108; color: #F5B21B; border: 1px solid #5B430D; }
-.badge-red { background: #2A0E0E; color: #F87171; border: 1px solid #3D1414; }
-.badge-amber { background: #2A1E08; color: #FBBF24; border: 1px solid #3D2C10; }
-.badge-blue { background: #0A1A2E; color: #60A5FA; border: 1px solid #0D2240; }
-.badge-gray { background: #141A22; color: #64748B; border: 1px solid #1A2232; }
 
-/* Input fields */
+.badge-green {
+  background: #2A2108;
+  color: #F5B21B;
+  border: 1px solid #5B430D;
+}
+
+.badge-red {
+  background: #2A0E0E;
+  color: #F87171;
+  border: 1px solid #3D1414;
+}
+
+.badge-amber {
+  background: #2A1E08;
+  color: #FBBF24;
+  border: 1px solid #3D2C10;
+}
+
+.badge-blue {
+  background: #0A1A2E;
+  color: #60A5FA;
+  border: 1px solid #0D2240;
+}
+
+.badge-gray {
+  background: #141A22;
+  color: #64748B;
+  border: 1px solid #1A2232;
+}
+
+/* Campos */
 .wms-input {
+  width: auto;
+  min-width: 0;
   background: #0A0F17;
   border: 1px solid #1A2232;
   border-radius: 5px;
@@ -145,16 +229,42 @@ h1, h2, h3, h4, h5, h6 {
   padding: 7px 10px;
   font-size: 13px;
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
+
 .wms-input:focus {
   border-color: #F5B21B;
   box-shadow: 0 0 0 2px rgba(245, 178, 27, 0.1);
 }
-.wms-input::placeholder { color: #364556; }
 
-/* Select */
+.wms-input::placeholder {
+  color: #64748B;
+  opacity: 0.8;
+}
+
+/* Quitar flechas de campos numéricos */
+.wms-input.cantidad-sin-flechas[type="number"]::-webkit-inner-spin-button,
+.wms-input.cantidad-sin-flechas[type="number"]::-webkit-outer-spin-button,
+input.cantidad-sin-flechas[type="number"]::-webkit-inner-spin-button,
+input.cantidad-sin-flechas[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  margin: 0 !important;
+}
+
+.wms-input.cantidad-sin-flechas[type="number"],
+input.cantidad-sin-flechas[type="number"],
+input[type="number"] {
+  -moz-appearance: textfield !important;
+  appearance: textfield !important;
+}
+
+/* Selectores */
 .wms-select {
+  min-width: 0;
+  max-width: 100%;
   background: #0A0F17;
   border: 1px solid #1A2232;
   border-radius: 5px;
@@ -164,60 +274,69 @@ h1, h2, h3, h4, h5, h6 {
   outline: none;
   cursor: pointer;
 }
-.wms-select:focus { border-color: #F5B21B; }
 
-/* Buttons */
+.wms-select:focus {
+  border-color: #F5B21B;
+}
+
+/* Botones */
+.btn-primary,
+.btn-secondary,
+.btn-danger {
+  max-width: 100%;
+  font-family: 'Outfit', sans-serif;
+  font-size: 12.5px;
+  padding: 8px 16px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, opacity 0.15s;
+}
+
 .btn-primary {
   background: #F5B21B;
   color: #06111C;
   font-weight: 600;
-  font-size: 12.5px;
-  padding: 8px 16px;
-  border-radius: 5px;
   border: none;
-  cursor: pointer;
-  font-family: 'Outfit', sans-serif;
   letter-spacing: 0.02em;
-  transition: background 0.15s, opacity 0.15s;
 }
-.btn-primary:hover { background: #FFC94A; }
+
+.btn-primary:hover {
+  background: #FFC94A;
+}
 
 .btn-secondary {
   background: #141B24;
   color: #94A3B8;
   font-weight: 500;
-  font-size: 12.5px;
-  padding: 8px 16px;
-  border-radius: 5px;
   border: 1px solid #1A2232;
-  cursor: pointer;
-  font-family: 'Outfit', sans-serif;
-  transition: background 0.15s, color 0.15s;
 }
-.btn-secondary:hover { background: #1C2532; color: #E2E8F0; }
+
+.btn-secondary:hover {
+  background: #1C2532;
+  color: #E2E8F0;
+}
 
 .btn-danger {
   background: #2A0E0E;
   color: #F87171;
   font-weight: 600;
-  font-size: 12.5px;
-  padding: 8px 16px;
-  border-radius: 5px;
   border: 1px solid #3D1414;
-  cursor: pointer;
-  font-family: 'Outfit', sans-serif;
-  transition: background 0.15s;
 }
-.btn-danger:hover { background: #3D1414; }
 
-/* Card */
+.btn-danger:hover {
+  background: #3D1414;
+}
+
+/* Tarjetas */
 .wms-card {
+  min-width: 0;
+  max-width: 100%;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 8px;
 }
 
-/* Sidebar active */
+/* Menú lateral */
 .nav-item {
   display: flex;
   align-items: center;
@@ -228,12 +347,17 @@ h1, h2, h3, h4, h5, h6 {
   font-weight: 500;
   color: #4B5A6B;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.15s, color 0.15s;
   text-decoration: none;
   white-space: nowrap;
   font-family: 'Outfit', sans-serif;
 }
-.nav-item:hover { background: #111620; color: #94A3B8; }
+
+.nav-item:hover {
+  background: #111620;
+  color: #94A3B8;
+}
+
 .nav-item.active {
   background: rgba(245, 178, 27, 0.1);
   color: #F5B21B;
@@ -241,18 +365,41 @@ h1, h2, h3, h4, h5, h6 {
   margin-left: -2px;
   padding-left: 14px;
 }
+
 .nav-group-label {
   font-size: 9.5px;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: #2D3D4D;
+  color: #64748B;
   padding: 4px 12px;
   margin-top: 8px;
   font-family: 'Outfit', sans-serif;
 }
 
-/* Alert */
-.alert-critical { background: #1E0808; border: 1px solid #3D1010; border-left: 3px solid #EF4444; }
-.alert-warning { background: #1A1008; border: 1px solid #3D2808; border-left: 3px solid #F59E0B; }
-.alert-info { background: #081418; border: 1px solid #0C2430; border-left: 3px solid #38BDF8; }
+/* Contenedores flexibles: evita que los hijos fuercen el ancho */
+main,
+main > section,
+main > div,
+section,
+article,
+form {
+  min-width: 0;
+  min-height: 0;
+}
+
+main > section {
+  overscroll-behavior: contain;
+}
+
+/* Las tablas anchas se desplazan en vez de deformar toda la página */
+main table {
+  max-width: 100%;
+}
+
+@media (max-width: 900px) {
+  .wms-table th,
+  .wms-table td {
+    padding: 7px 8px;
+  }
+}

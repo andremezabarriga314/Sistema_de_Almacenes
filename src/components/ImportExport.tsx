@@ -1,360 +1,624 @@
 import { useState, useRef } from "react";
 import * as XLSX from "xlsx";
-
-import { useApp } from "../store/AppContext";
-
 import {
-  exportProductsExcel,
+  useApp,
+  type ImportedMovementRow,
+} from "../store/AppContext";
+import {
+  exportProductControlExcel,
   exportMovementsExcel,
   exportSuppliersExcel,
   exportLotsExcel,
 } from "../lib/exportExcel";
-
 import {
   exportProductsPDF,
   exportMovementsPDF,
   exportSuppliersPDF,
+  exportLotsPDF,
 } from "../lib/exportPDF";
+import { dateKey, parseExcelNumber } from "../lib/excelKardex";
 
-function excelSerialToDate(n: unknown): string {
-  if (typeof n !== "number" || n < 100) {
-    return String(n || "");
-  }
+// ── Lectura fiel de cada celda del Excel (sin cambiar valores ni fechas) ──
+// Formatos de fecha incorporados de Excel que dependen del idioma del sistema (m/d/yy ...)
+const LOCALE_DATE_FORMATS = ["m/d/yy", "mm-dd-yy", "m/d/yyyy", "mm/dd/yy", "mm/dd/yyyy", "d-mmm-yy", "dd-mmm-yy"];
 
-  return new Date(
-    Date.UTC(1899, 11, 30) + n * 86400000
-  )
-    .toISOString()
-    .slice(0, 10);
+function excelSerialToDate(serial: number): string {
+  const date = new Date(Date.UTC(1899, 11, 30) + Math.floor(serial) * 86400000);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(0, 10);
 }
 
-function smartCell(val: unknown): string {
-  if (val === null || val === undefined) {
-    return "";
+function isExcelDateFormat(format: string): boolean {
+  const tokens = format
+    .replace(/"(?:[^"]|"")*"/g, "")
+    .replace(/\\.|_.|\*.?/g, "")
+    .replace(/\[[^\]]*\]/g, "");
+
+  return /[dy]/i.test(tokens);
+}
+
+type CellInfo = {
+  shown: string; // tal como se ve en Excel
+  clean: string; // para importar al catálogo (fechas AAAA-MM-DD)
+  value: string | number; // valor original con su tipo
+  format: string | null; // formato numérico/fecha original
+};
+
+function readCell(cellObj: XLSX.CellObject | undefined): CellInfo {
+  if (!cellObj || cellObj.v === undefined || cellObj.v === null) {
+    return { shown: "", clean: "", value: "", format: null };
   }
 
-  if (typeof val === "number") {
-    if (
-      val > 30000 &&
-      val < 70000 &&
-      Number.isInteger(val)
-    ) {
-      return excelSerialToDate(val);
+  const z = typeof cellObj.z === "string" ? cellObj.z : undefined;
+
+  if (cellObj.t === "n" && typeof cellObj.v === "number") {
+    if (z && isExcelDateFormat(z)) {
+      const clean = excelSerialToDate(cellObj.v);
+      const [year, month, day] = clean.split("-");
+      const localeDependent = LOCALE_DATE_FORMATS.includes(z.toLowerCase());
+      return {
+        shown:
+          localeDependent && clean
+            ? `${day}/${month}/${year}`
+            : cellObj.w ?? clean,
+        clean,
+        value: cellObj.v,
+        format: localeDependent ? "dd/mm/yyyy" : z,
+      };
     }
-
-    return String(val);
+    return {
+      shown: cellObj.w ?? String(cellObj.v),
+      clean: String(cellObj.v),
+      value: cellObj.v,
+      format: z && z !== "General" ? z : null,
+    };
   }
 
-  return String(val)
-    .replace(/^\t+|\t+$/g, "")
-    .trim();
+  if (cellObj.t === "b") {
+    const text = cellObj.v ? "VERDADERO" : "FALSO";
+    return { shown: text, clean: text, value: text, format: null };
+  }
+
+  const text = String(cellObj.w ?? cellObj.v);
+  return { shown: text, clean: text.replace(/^\t+|\t+$/g, "").trim(), value: String(cellObj.v), format: null };
 }
 
 type SheetData = {
   headers: string[];
   rows: string[][];
   name: string;
-  rawRows: unknown[][];
+  previewRows: string[][];
+  columnCount: number;
+  values: (string | number)[][];
+  merges: { s: { r: number; c: number }; e: { r: number; c: number } }[];
+  colWidths: (number | null)[];
+  numFmts: [number, number, string][];
 };
+
+type ExportAction = { label: string; fn: () => void };
+type ExportCard = {
+  label: string;
+  desc: string;
+  icon: string;
+  color: string;
+  actions: ExportAction[];
+};
+
+function columnName(index: number): string {
+  let result = "";
+  let value = index + 1;
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    result = String.fromCharCode(65 + remainder) + result;
+    value = Math.floor((value - 1) / 26);
+  }
+  return result;
+}
 
 export default function ImportExport() {
   const {
-    products,
-    movements,
-    suppliers,
-    lots,
-    addProduct,
-    updateProduct,
-    seeded,
-    seedAll,
+    products, movements, suppliers, lots,
+    addProduct, updateProduct, seeded, seedAll,
+    saveImportedExcelSheets, importLots, importInventoryMovements,
   } = useApp();
-
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const [tab, setTab] = useState<"import" | "export">(
-    "import"
-  );
-
+  const [tab, setTab] = useState<"import" | "export">("import");
   const [sheets, setSheets] = useState<SheetData[]>([]);
   const [activeSheet, setActiveSheet] = useState(0);
   const [fileName, setFileName] = useState("");
   const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{ created: number; updated: number; errors: number } | null>(null);
 
-  const [importResult, setImportResult] = useState<{
-    created: number;
-    updated: number;
-    errors: number;
-  } | null>(null);
-
-  const handleFile = (
-    e: React.ChangeEvent<HTMLInputElement>
-  ) => {
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-
-    if (!file) {
-      return;
-    }
-
+    if (!file) return;
     setFileName(file.name);
     setImportResult(null);
-
     const reader = new FileReader();
+    reader.onload = (ev) => {
+      const buffer = ev.target!.result as ArrayBuffer;
+      const data = new Uint8Array(buffer);
+      // Sin conversión de fechas: cada celda se lee con su valor y formato originales
+      const wb = XLSX.read(data, { type: "array", cellNF: true, cellStyles: true });
+      const parsed: SheetData[] = wb.SheetNames.map((name) => {
+        const ws = wb.Sheets[name];
+        const range = ws["!ref"] ? XLSX.utils.decode_range(ws["!ref"]) : null;
+        // Siempre desde A1, para conservar la posición exacta de cada dato
+        const rowCount = range ? range.e.r + 1 : 0;
+        const columnCount = range ? range.e.c + 1 : 1;
 
-    reader.onload = (event) => {
-      if (!event.target?.result) {
-        return;
-      }
+        const previewRows: string[][] = [];
+        const clean: string[][] = [];
+        const values: (string | number)[][] = [];
+        const numFmts: [number, number, string][] = [];
 
-      const data = new Uint8Array(
-        event.target.result as ArrayBuffer
-      );
-
-      const workbook = XLSX.read(data, {
-        type: "array",
-      });
-
-      const parsed: SheetData[] =
-        workbook.SheetNames.map((name) => {
-          const worksheet = workbook.Sheets[name];
-
-          const raw: unknown[][] =
-            XLSX.utils.sheet_to_json(worksheet, {
-              header: 1,
-              defval: null,
-            });
-
-          let headerRow = 0;
-
-          for (
-            let i = 0;
-            i < Math.min(raw.length, 10);
-            i++
-          ) {
-            const nonNull = (
-              raw[i] as unknown[]
-            ).filter(
-              (cell) =>
-                cell !== null &&
-                cell !== undefined &&
-                String(cell).trim() !== ""
-            ).length;
-
-            if (nonNull >= 3) {
-              headerRow = i;
-              break;
-            }
+        for (let r = 0; r < rowCount; r++) {
+          const shownRow: string[] = [];
+          const cleanRow: string[] = [];
+          const valueRow: (string | number)[] = [];
+          for (let c = 0; c < columnCount; c++) {
+            const info = readCell(ws[XLSX.utils.encode_cell({ r, c })] as XLSX.CellObject | undefined);
+            shownRow.push(info.shown);
+            cleanRow.push(info.clean);
+            valueRow.push(info.value);
+            if (info.format) numFmts.push([r, c, info.format]);
           }
+          previewRows.push(shownRow);
+          clean.push(cleanRow);
+          values.push(valueRow);
+        }
 
-          const headers = (
-            (raw[headerRow] as unknown[]) || []
-          ).map((cell) => smartCell(cell));
+        // Detectar la fila de encabezados reales, incluso si antes hay títulos generales.
+        const filled = (row: string[]) => row.filter((c) => c.trim() !== "").length;
+        const normalizeCell = (value: string) =>
+          String(value ?? "")
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .toLocaleLowerCase()
+            .replace(/[^a-z0-9]+/g, " ")
+            .trim();
 
-          const rows = raw
-            .slice(headerRow + 1)
-            .filter((row) =>
-              (row as unknown[]).some(
-                (cell) =>
-                  cell !== null &&
-                  cell !== undefined &&
-                  String(cell).trim() !== ""
-              )
-            )
-            .map((row) =>
-              (row as unknown[]).map((cell) =>
-                smartCell(cell)
-              )
-            );
+        const headerTerms = [
+          "producto", "alimento", "marca", "presentacion",
+          "lote", "vencimiento", "produccion", "cantidad",
+          "unidades", "saldo", "proveedor", "ingreso",
+          "sku", "codigo", "fecha de recepcion"
+        ];
 
-          return {
-            name,
-            headers,
-            rows,
-            rawRows: raw,
-          };
+        const scoreHeader = (row: string[]) => {
+          const cells = row.map(normalizeCell);
+          return headerTerms.reduce(
+            (score, term) =>
+              score + (cells.some((cell) => cell === term || cell.includes(term)) ? 1 : 0),
+            0
+          );
+        };
+
+        let hRow = 0;
+        let bestScore = -1;
+        for (let i = 0; i < Math.min(clean.length, 20); i++) {
+          const score = scoreHeader(clean[i]);
+          if (filled(clean[i]) >= 3 && score > bestScore) {
+            bestScore = score;
+            hRow = i;
+          }
+        }
+
+        const headers = clean[hRow] || [];
+        const rows = clean.slice(hRow + 1).filter((row) => filled(row) > 0);
+
+        const merges = ((ws["!merges"] as XLSX.Range[] | undefined) || [])
+          .map((m) => ({ s: { r: m.s.r, c: m.s.c }, e: { r: m.e.r, c: m.e.c } }))
+          .filter((m) => m.e.r < rowCount && m.e.c < columnCount);
+
+        const wsCols = (ws["!cols"] as XLSX.ColInfo[] | undefined) || [];
+        const colWidths = Array.from({ length: columnCount }, (_, i) => {
+          const col = wsCols[i];
+          return col?.wch ?? (col?.wpx ? Math.round(col.wpx / 7) : null);
         });
 
+        return { name, headers, rows, previewRows, columnCount, values, merges, colWidths, numFmts };
+      });
       setSheets(parsed);
       setActiveSheet(0);
+      // Guarda el archivo completo, tal como se ve en Excel, para mostrarlo en Productos
+      saveImportedExcelSheets(
+        file.name,
+        parsed.map((sh) => ({
+          name: sh.name,
+          headers: sh.headers,
+          rows: sh.previewRows,
+          values: sh.values,
+          merges: sh.merges,
+          colWidths: sh.colWidths,
+          numFmts: sh.numFmts,
+        })),
+        buffer
+      );
     };
-
     reader.readAsArrayBuffer(file);
   };
 
   const doImport = () => {
     const sheet = sheets[activeSheet];
-
-    if (!sheet) {
-      return;
-    }
-
+    if (!sheet) return;
     setImporting(true);
+    let created = 0,
+      updated = 0,
+      errors = 0;
+    const normalizeHeader = (value: unknown) =>
+      String(value ?? "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLocaleLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim();
 
-    let created = 0;
-    let updated = 0;
-    let errors = 0;
+    const h = sheet.headers.map(normalizeHeader);
 
-    const headers = sheet.headers.map((header) =>
-      header.toLowerCase()
-    );
-
-    const getValue = (
-      row: string[],
-      ...keys: string[]
-    ): string => {
+    const get = (row: string[], ...keys: string[]) => {
       for (const key of keys) {
-        const index = headers.findIndex((header) =>
-          header.includes(key)
-        );
+        const normalizedKey = normalizeHeader(key);
+        const idx = h.findIndex((header) => header === normalizedKey);
+        if (idx >= 0 && String(row[idx] ?? "").trim() !== "") {
+          return String(row[idx]).trim();
+        }
+      }
 
-        if (index >= 0 && row[index]) {
-          return row[index];
+      for (const key of keys) {
+        const normalizedKey = normalizeHeader(key);
+        const idx = h.findIndex((header) => {
+          if (!header.includes(normalizedKey)) return false;
+          if (normalizedKey === "lote" && /^(id|codigo|cod) lote$/.test(header)) {
+            return false;
+          }
+          return true;
+        });
+
+        if (idx >= 0 && String(row[idx] ?? "").trim() !== "") {
+          return String(row[idx]).trim();
         }
       }
 
       return "";
     };
 
-    sheet.rows.forEach((row) => {
-      try {
-        const sku = getValue(
-          row,
-          "sku",
-          "codigo",
-          "code",
-          "cód"
-        );
+    const getProductIdentifier = (row: string[]) => {
+      const identifiers = [
+        ["sku"],
+        [
+          "codigo producto",
+          "codigo de producto",
+          "codigo alimento",
+          "codigo de alimento",
+          "cod producto",
+          "cod alimento",
+        ],
+        ["codigo", "cod", "code"],
+      ];
 
-        const name = getValue(
-          row,
-          "nombre",
-          "name",
-          "alimento",
-          "producto",
-          "descripcion"
+      for (const aliases of identifiers) {
+        const index = h.findIndex(
+          (header) =>
+            aliases.includes(header) &&
+            !/(lote|lot|batch|movimiento|proveedor)/.test(header)
         );
+        if (index >= 0 && String(row[index] ?? "").trim()) {
+          return String(row[index]).trim();
+        }
+      }
 
-        if (!sku && !name) {
-          return;
+      return "";
+    };
+
+    const getProductName = (row: string[]) => {
+      const aliases = [
+        "nombre del alimento",
+        "nombre de alimento",
+        "nombre del producto",
+        "nombre de producto",
+        "alimento",
+        "alimento programado",
+        "producto",
+        "nombre",
+        "descripcion",
+        "descripcion del producto",
+        "articulo",
+        "item",
+      ];
+
+      for (const alias of aliases) {
+        const index = h.findIndex((header) => header === alias);
+        if (index >= 0 && String(row[index] ?? "").trim()) {
+          return String(row[index]).trim();
+        }
+      }
+
+      return "";
+    };
+
+    const normalizeSheetName = (value: unknown) => normalizeHeader(value).replace(/\s+/g, " ").trim();
+    const entrySheet = sheets.find((item) => ["entrada", "entradas"].includes(normalizeSheetName(item.name)));
+    const exitSheet = sheets.find((item) => ["salida", "salidas"].includes(normalizeSheetName(item.name)));
+
+    if (entrySheet && exitSheet) {
+      const importedRows: ImportedMovementRow[] = [];
+
+      const readCell = (candidate: typeof entrySheet, row: string[], keys: string[]) => {
+        const headers = candidate.headers.map(normalizeHeader);
+
+        for (const key of keys) {
+          const normalizedKey = normalizeHeader(key);
+          const index = headers.findIndex((header) => header === normalizedKey);
+          if (index >= 0 && String(row[index] ?? "").trim() !== "") {
+            return String(row[index]).trim();
+          }
         }
 
-        const existing = products.find(
-          (product) =>
-            product.sku === sku ||
-            product.name === name
+        for (const key of keys) {
+          const normalizedKey = normalizeHeader(key);
+          const index = headers.findIndex((header) =>
+            header.includes(normalizedKey) &&
+            !(normalizedKey === "lote" && /^(id|codigo|cod) lote$/.test(header))
+          );
+          if (index >= 0 && String(row[index] ?? "").trim() !== "") {
+            return String(row[index]).trim();
+          }
+        }
+
+        return "";
+      };
+
+      const numberValue = (value: string) => parseExcelNumber(value) ?? undefined;
+
+      const readMovementSheet = (
+        candidate: typeof entrySheet,
+        type: "Entrada" | "Salida"
+      ) => {
+        candidate.rows.forEach((row, rowIndex) => {
+          const sku = readCell(candidate, row, ["sku", "codigo", "código", "cod", "code"]);
+          const name = readCell(candidate, row, ["producto", "alimento", "nombre", "descripcion", "descripción"]);
+          if (!sku && !name) return;
+
+          const quantityKeys = type === "Entrada"
+            ? ["ingreso", "cantidad de ingreso", "cantidad entrada", "cantidad", "unidades", "qty"]
+            : ["salida", "cantidad de salida", "cantidad salida", "cantidad", "unidades", "qty"];
+
+          const rawQty = readCell(candidate, row, quantityKeys);
+          const qty = numberValue(rawQty);
+          if (qty === undefined || qty === 0) return;
+
+          if (qty < 0 || !Number.isInteger(qty)) {
+            errors++;
+            return;
+          }
+
+          const rawDate = readCell(candidate, row, [
+            "fecha", "fecha ingreso", "fecha de ingreso", "fecha salida",
+            "fecha de salida", "fecha movimiento", "fecha del movimiento"
+          ]);
+          const normalizedDate = rawDate ? dateKey(rawDate) : "";
+
+          const rawBalance = readCell(candidate, row, ["saldo"]);
+          const reportedBalance = numberValue(rawBalance);
+
+          importedRows.push({
+            sku,
+            name,
+            type,
+            qty,
+            date: normalizedDate || undefined,
+            reportedBalance,
+            brand: readCell(candidate, row, ["marca"]),
+            presentation: readCell(candidate, row, ["presentacion", "presentación"]),
+            unit: readCell(candidate, row, ["unidad", "unidad de medida"]) || "Unidad",
+            location: readCell(candidate, row, ["ubicacion", "ubicación"]),
+            reference: readCell(candidate, row, ["referencia", "documento", "nro documento"]) ||
+              `Excel ${candidate.name} fila ${rowIndex + 1}`,
+          });
+        });
+      };
+
+      // Las entradas se leen primero; el orden por fecha conserva el saldo cronológico.
+      readMovementSheet(entrySheet, "Entrada");
+      readMovementSheet(exitSheet, "Salida");
+
+      importedRows.sort((a, b) => {
+        if (!a.date && !b.date) return 0;
+        if (!a.date) return -1;
+        if (!b.date) return 1;
+        return a.date.localeCompare(b.date);
+      });
+
+      try {
+        const result = importInventoryMovements(importedRows);
+        setImportResult({
+          created: result.movements,
+          updated: 0,
+          errors,
+        });
+      } catch (error) {
+        setImportResult({ created: 0, updated: 0, errors: errors + 1 });
+        window.alert(error instanceof Error ? error.message : String(error));
+      } finally {
+        setImporting(false);
+      }
+
+      return;
+    }
+    const normalizedSheetName = sheet.name
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLocaleLowerCase()
+      .trim();
+
+    const hasLotColumn = h.some(
+      (header) =>
+        /\blote\b/.test(header) &&
+        !/^(id|codigo|cod) lote$/.test(header)
+    );
+    const hasExpiryColumn = h.some((header) =>
+      /vencimiento|caducidad|expiracion|expira|expiry|vence/.test(header)
+    );
+    const hasProductColumn = h.some((header) => /producto|alimento/.test(header));
+    const hasQuantityColumn = h.some((header) =>
+      /cantidad|unidades|disponible|existencia|stock|saldo|ingreso|qty/.test(header)
+    );
+
+    if (
+      /\blotes?\b/.test(normalizedSheetName) ||
+      (hasLotColumn && hasExpiryColumn && hasProductColumn && hasQuantityColumn)
+    ) {
+      const lotRows: Parameters<typeof importLots>[0] = [];
+
+      sheet.rows.forEach((row) => {
+        try {
+          const lotSku = getProductIdentifier(row);
+          const lotName = getProductName(row);
+          const normalizedLotName = normalizeHeader(lotName);
+
+          const productBySku = lotSku
+            ? products.find(
+                (item) =>
+                  normalizeHeader(item.sku) === normalizeHeader(lotSku)
+              )
+            : undefined;
+
+          const nameMatches = normalizedLotName
+            ? products.filter(
+                (item) => normalizeHeader(item.name) === normalizedLotName
+              )
+            : [];
+
+          const exactNameMatch =
+            nameMatches.length === 1 ? nameMatches[0] : undefined;
+          if (
+            (lotSku && !productBySku && !exactNameMatch) ||
+            (productBySku &&
+              exactNameMatch &&
+              productBySku.id !== exactNameMatch.id) ||
+            (!productBySku && nameMatches.length > 1)
+          ) {
+            errors++;
+            return;
+          }
+
+          const product = productBySku || exactNameMatch;
+
+          const lotNumber = get(row, "numero de lote", "num lote", "n lote", "n de lote", "lote numero", "numero lote", "lot number", "lot");
+          const productionDate = dateKey(get(row, "fecha de produccion", "fecha de producción", "produccion", "producción", "fecha de fabricacion", "fabricacion", "fabricación"));
+          const expiryDate = dateKey(get(row, "fecha de vencimiento", "fecha vencimiento", "vencimiento", "fecha de expiracion", "expiracion", "expira", "vence", "expiry", "caducidad"));
+          const qtyText = get(row, "cantidad unidades", "unidades disponibles", "unidades", "cantidad", "disponible", "existencia", "stock actual", "stock", "qty", "saldo", "ingreso");
+          const qty = parseExcelNumber(qtyText);
+          const supplierName = get(row, "proveedor", "supplier");
+          const supplier = suppliers.find(
+            (item) =>
+              item.name.trim().toLocaleLowerCase() ===
+              supplierName.trim().toLocaleLowerCase()
+          );
+
+          if (
+            !product ||
+            !lotNumber.trim() ||
+            !productionDate.trim() ||
+            !expiryDate.trim() ||
+            qty === null ||
+            !Number.isInteger(qty) ||
+            qty <= 0 ||
+            false
+          ) {
+            errors++;
+            return;
+          }
+
+          lotRows.push({
+            productId: product.id,
+            lotNumber: lotNumber.trim(),
+            productionDate: productionDate.trim(),
+            expiryDate: expiryDate.trim(),
+            qty,
+            receivedDate: dateKey(get(row, "fecha de ingreso", "fecha ingreso")) || undefined,
+            supplierId: supplier?.id,
+          });
+        } catch {
+          errors++;
+        }
+      });
+
+      try {
+        if (lotRows.length > 0) {
+          const result = importLots(lotRows);
+          created = result.created;
+          updated = 0;
+        }
+      } catch (error) {
+        console.error("Error al importar lotes:", error);
+        errors += lotRows.length;
+        window.alert(
+          "No se pudieron importar los lotes.\n\n" +
+          (error instanceof Error ? error.message : String(error)) +
+          "\n\nRevisa que el producto exista, que no haya lotes duplicados y que las cantidades coincidan con el stock disponible."
+        );
+      }
+
+      setImportResult({ created, updated, errors });
+      setImporting(false);
+      return;
+    }
+
+    sheet.rows.forEach((row) => {
+      try {
+        const sku = get(row, "sku", "codigo", "code", "cód");
+        const name = get(row, "nombre", "name", "alimento", "producto", "descripcion");
+        if (!sku && !name) return;
+        const existing = products.find((p) => p.sku === sku || p.name === name);
+
+        const qty = parseExcelNumber(get(row, "stock", "cantidad", "qty", "saldo")) ?? 0;
+        const lotNumber = get(row, "lote", "lot");
+        const productionDate = dateKey(get(row, "fecha de produccion", "produccion", "fabricacion", "fabricación"));
+        const expiryDate = dateKey(get(row, "fecha de vencimiento", "vencimiento", "vence", "expiry", "caducidad"));
+        const hasLot = qty > 0 && !!lotNumber && !!productionDate && !!expiryDate;
+
+        const supplierName = get(row, "proveedor", "supplier");
+        const matchedSupplier = suppliers.find(
+          (supplier) =>
+            supplier.name.trim().toLocaleLowerCase() ===
+            supplierName.trim().toLocaleLowerCase()
         );
 
-        const data = {
-          sku:
-            sku ||
-            name
-              .slice(0, 12)
-              .toUpperCase()
-              .replace(/\s+/g, "-"),
-
+        const base = {
+          sku: sku || name.slice(0, 12).toUpperCase().replace(/\s+/g, "-"),
           name: name || sku,
-
-          category:
-            getValue(
-              row,
-              "categoria",
-              "category",
-              "categ"
-            ) || "Otro",
-
-          subcategory: getValue(
-            row,
-            "subcategoria",
-            "sub"
-          ),
-
-          costPrice:
-            parseFloat(
-              getValue(
-                row,
-                "costo",
-                "cost",
-                "precio costo",
-                "unitcost"
-              )
-            ) || 0,
-
-          salePrice:
-            parseFloat(
-              getValue(
-                row,
-                "venta",
-                "sale",
-                "precio venta"
-              )
-            ) || 0,
-
-          stock:
-            parseInt(
-              getValue(
-                row,
-                "stock",
-                "cantidad",
-                "qty",
-                "saldo"
-              )
-            ) || 0,
-
-          minStock:
-            parseInt(
-              getValue(
-                row,
-                "minimo",
-                "min stock",
-                "minstock"
-              )
-            ) || 5,
-
-          maxStock:
-            parseInt(
-              getValue(
-                row,
-                "maximo",
-                "max stock",
-                "maxstock"
-              )
-            ) || 9999,
-
-          unit:
-            getValue(
-              row,
-              "unidad",
-              "unit",
-              "presentacion"
-            ) || "Kg",
-
-          location: getValue(
-            row,
-            "ubicacion",
-            "location"
-          ),
-
-          supplierId: "",
-
-          status: (getValue(
-            row,
-            "estado",
-            "status"
-          ) || "Activo") as "Activo" | "Inactivo",
-
-          storageTemp:
-            getValue(
-              row,
-              "temperatura",
-              "temp",
-              "almac"
-            ) || "Ambiente (15–25 °C)",
+          brand: get(row, "marca", "brand") || existing?.brand || "",
+          presentation:
+            get(row, "presentacion", "presentación", "empaque", "formato") ||
+            existing?.presentation ||
+            "",
+          gramsPerUnit:
+            parseFloat(get(row, "gramos", "gramaje", "peso")) ||
+            existing?.gramsPerUnit ||
+            undefined,
+          costPrice: parseFloat(get(row, "costo", "cost", "precio costo", "unitcost")) || existing?.costPrice || 0,
+          salePrice: parseFloat(get(row, "venta", "sale", "precio venta")) || existing?.salePrice || 0,
+          unit: get(row, "unidad", "unit") || existing?.unit || "Unidad",
+          location: get(row, "ubicacion", "location") || existing?.location || "",
+          supplierId: matchedSupplier?.id || existing?.supplierId || "",
+          status: (get(row, "estado", "status") || existing?.status || "Activo") as "Activo" | "Inactivo",
+          storageTemp: get(row, "temperatura", "temp", "almac") || existing?.storageTemp || "Ambiente (15–25 °C)",
         };
 
         if (existing) {
-          updateProduct(existing.id, data);
+          // El stock de un producto existente no se toca: solo cambia con movimientos
+          updateProduct(existing.id, base);
           updated++;
+        } else if (hasLot) {
+          addProduct(
+            { ...base, stock: qty },
+            { lotNumber, productionDate, expiryDate, qty }
+          );
+          created++;
         } else {
-          addProduct(data);
+          addProduct({ ...base, stock: 0 });
           created++;
         }
       } catch {
@@ -362,41 +626,23 @@ export default function ImportExport() {
       }
     });
 
-    setImportResult({
-      created,
-      updated,
-      errors,
-    });
-
+    setImportResult({ created, updated, errors });
     setImporting(false);
   };
 
   const sheet = sheets[activeSheet];
 
-  const exportCards = [
+  const exportCards: ExportCard[] = [
     {
-      label: "Alimentos",
-      desc: "Catálogo completo con valoración y lotes",
+      label: "Control de productos",
+      desc: "Inventario, historial, ingresos y salidas por lote",
       icon: "⊞",
       color: "#00C896",
       actions: [
-        {
-          label: "Excel (.xlsx)",
-          fn: () =>
-            exportProductsExcel(
-              products,
-              suppliers,
-              lots
-            ),
-        },
-        {
-          label: "PDF",
-          fn: () =>
-            exportProductsPDF(
-              products,
-              suppliers
-            ),
-        },
+        { label: "Todo", fn: () => exportProductControlExcel(products, movements, lots, suppliers) },
+        { label: "Ingresos", fn: () => exportProductControlExcel(products, movements, lots, suppliers, "Entrada") },
+        { label: "Salidas", fn: () => exportProductControlExcel(products, movements, lots, suppliers, "Salida") },
+        { label: "PDF", fn: () => exportProductsPDF(products, suppliers) },
       ],
     },
     {
@@ -405,85 +651,8 @@ export default function ImportExport() {
       icon: "≡",
       color: "#38BDF8",
       actions: [
-        {
-          label: "Excel (.xlsx)",
-          fn: () =>
-            exportMovementsExcel(
-              movements,
-              suppliers,
-              "Movimientos"
-            ),
-        },
-        {
-          label: "PDF",
-          fn: () =>
-            exportMovementsPDF(
-              movements,
-              "Movimientos"
-            ),
-        },
-      ],
-    },
-    {
-      label: "Entradas",
-      desc: "Solo movimientos de entrada",
-      icon: "↓",
-      color: "#34D399",
-      actions: [
-        {
-          label: "Excel (.xlsx)",
-          fn: () =>
-            exportMovementsExcel(
-              movements.filter(
-                (movement) =>
-                  movement.type === "Entrada"
-              ),
-              suppliers,
-              "Entradas"
-            ),
-        },
-        {
-          label: "PDF",
-          fn: () =>
-            exportMovementsPDF(
-              movements.filter(
-                (movement) =>
-                  movement.type === "Entrada"
-              ),
-              "Entradas"
-            ),
-        },
-      ],
-    },
-    {
-      label: "Salidas",
-      desc: "Solo movimientos de salida",
-      icon: "↑",
-      color: "#F87171",
-      actions: [
-        {
-          label: "Excel (.xlsx)",
-          fn: () =>
-            exportMovementsExcel(
-              movements.filter(
-                (movement) =>
-                  movement.type === "Salida"
-              ),
-              suppliers,
-              "Salidas"
-            ),
-        },
-        {
-          label: "PDF",
-          fn: () =>
-            exportMovementsPDF(
-              movements.filter(
-                (movement) =>
-                  movement.type === "Salida"
-              ),
-              "Salidas"
-            ),
-        },
+        { label: "Excel (.xlsx)", fn: () => exportMovementsExcel(movements, "Movimientos", suppliers) },
+        { label: "PDF", fn: () => exportMovementsPDF(movements, suppliers, "Movimientos", products) },
       ],
     },
     {
@@ -492,10 +661,8 @@ export default function ImportExport() {
       icon: "◫",
       color: "#A78BFA",
       actions: [
-        {
-          label: "Excel (.xlsx)",
-          fn: () => exportLotsExcel(lots),
-        },
+        { label: "Excel (.xlsx)", fn: () => exportLotsExcel(lots, suppliers) },
+        { label: "PDF", fn: () => exportLotsPDF(lots) },
       ],
     },
     {
@@ -504,169 +671,73 @@ export default function ImportExport() {
       icon: "◈",
       color: "#FBBF24",
       actions: [
-        {
-          label: "Excel (.xlsx)",
-          fn: () =>
-            exportSuppliersExcel(suppliers),
-        },
-        {
-          label: "PDF",
-          fn: () =>
-            exportSuppliersPDF(suppliers),
-        },
+        { label: "Excel (.xlsx)", fn: () => exportSuppliersExcel(suppliers) },
+        { label: "PDF", fn: () => exportSuppliersPDF(suppliers) },
       ],
     },
   ];
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100%",
-        overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
-          padding: "20px 24px 0",
-          borderBottom: "1px solid #111820",
-          flexShrink: 0,
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: 14,
-          }}
-        >
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+      {/* Header */}
+      <div style={{ padding: "20px 24px 0", borderBottom: "1px solid #111820", flexShrink: 0 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
           <div>
-            <h1
-              style={{
-                fontFamily: "Outfit, sans-serif",
-                fontSize: 20,
-                fontWeight: 700,
-                color: "#E2E8F0",
-              }}
-            >
+            <h1 style={{ fontFamily: "Outfit, sans-serif", fontSize: 20, fontWeight: 700, color: "#E2E8F0" }}>
               Importar / Exportar
             </h1>
-
-            <div
-              style={{
-                fontSize: 11,
-                color: "#4B5A6B",
-                fontFamily: "JetBrains Mono",
-              }}
-            >
+            <div style={{ fontSize: 11, color: "#4B5A6B", fontFamily: "JetBrains Mono" }}>
               Gestión de archivos Excel y PDF
             </div>
           </div>
-
           {!seeded && (
             <button
               className="btn-primary"
-              style={{
-                fontSize: 12,
-                background: "#A78BFA",
-                border: "none",
-              }}
+              style={{ fontSize: 12, background: "#A78BFA", border: "none" }}
               onClick={seedAll}
             >
-              ⚡ Cargar datos de ejemplo
-              (CALLERÍA 5 2026)
+              ⚡ Cargar datos de ejemplo (CALLERÍA 5 2026)
             </button>
           )}
         </div>
-
-        <div
-          style={{
-            display: "flex",
-            gap: 0,
-          }}
-        >
-          {(["import", "export"] as const).map(
-            (type) => (
-              <button
-                key={type}
-                onClick={() => setTab(type)}
-                style={{
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                  padding: "8px 20px",
-                  fontSize: 13,
-                  fontFamily: "Outfit, sans-serif",
-                  fontWeight: 600,
-                  color:
-                    tab === type
-                      ? "#00C896"
-                      : "#4B5A6B",
-                  borderBottom:
-                    tab === type
-                      ? "2px solid #00C896"
-                      : "2px solid transparent",
-                  marginBottom: -1,
-                }}
-              >
-                {type === "import"
-                  ? "Importar Excel"
-                  : "Exportar Reportes"}
-              </button>
-            )
-          )}
+        <div style={{ display: "flex", gap: 0 }}>
+          {(["import", "export"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: "8px 20px",
+                fontSize: 13,
+                fontFamily: "Outfit, sans-serif",
+                fontWeight: 600,
+                color: tab === t ? "#00C896" : "#4B5A6B",
+                borderBottom: tab === t ? "2px solid #00C896" : "2px solid transparent",
+                marginBottom: -1,
+              }}
+            >
+              {t === "import" ? "Importar Excel" : "Exportar Reportes"}
+            </button>
+          ))}
         </div>
       </div>
 
-      <div
-        style={{
-          flex: 1,
-          overflow: "hidden",
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
+      <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {tab === "export" ? (
-          <div
-            style={{
-              flex: 1,
-              overflowY: "auto",
-              padding: 24,
-            }}
-          >
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns:
-                  "repeat(3, 1fr)",
-                gap: 14,
-              }}
-            >
+          /* ── EXPORT TAB ── */
+          <div style={{ flex: 1, overflowY: "auto", padding: 24 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
               {exportCards.map((card) => (
-                <div
-                  key={card.label}
-                  className="wms-card"
-                  style={{
-                    padding: 18,
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 10,
-                      marginBottom: 10,
-                    }}
-                  >
+                <div key={card.label} className="wms-card" style={{ padding: 18 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
                     <div
                       style={{
                         width: 34,
                         height: 34,
                         borderRadius: 7,
-                        background:
-                          card.color + "1A",
+                        background: card.color + "1A",
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
@@ -676,99 +747,52 @@ export default function ImportExport() {
                     >
                       {card.icon}
                     </div>
-
                     <div>
-                      <div
-                        style={{
-                          fontFamily: "Outfit",
-                          fontSize: 13,
-                          fontWeight: 700,
-                          color: "#E2E8F0",
-                        }}
-                      >
+                      <div style={{ fontFamily: "Outfit", fontSize: 13, fontWeight: 700, color: "#E2E8F0" }}>
                         {card.label}
                       </div>
-
-                      <div
-                        style={{
-                          fontSize: 10.5,
-                          color: "#4B5A6B",
-                        }}
-                      >
-                        {card.desc}
-                      </div>
+                      <div style={{ fontSize: 10.5, color: "#4B5A6B" }}>{card.desc}</div>
                     </div>
                   </div>
-
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 6,
-                      flexWrap: "wrap",
-                    }}
-                  >
-                    {card.actions.map(
-                      (action) => (
-                        <button
-                          key={action.label}
-                          className="btn-secondary"
-                          style={{
-                            fontSize: 11,
-                            padding: "5px 12px",
-                          }}
-                          onClick={action.fn}
-                          disabled={
-                            products.length === 0 &&
-                            movements.length === 0
-                          }
-                        >
-                          {action.label}
-                        </button>
-                      )
-                    )}
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {card.actions.map((a) => (
+                      <button
+                        key={a.label}
+                        className="btn-secondary"
+                        style={{ fontSize: 11, padding: "5px 12px" }}
+                        onClick={a.fn}
+                        disabled={products.length === 0 && movements.length === 0}
+                      >
+                        {a.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
               ))}
             </div>
-
             <div
               style={{
                 marginTop: 16,
                 padding: "10px 14px",
                 background: "#08120E",
                 border: "1px solid #0D3D26",
-                borderLeft:
-                  "3px solid #00C896",
+                borderLeft: "3px solid #00C896",
                 borderRadius: 5,
               }}
             >
-              <span
-                style={{
-                  fontSize: 11,
-                  color: "#4B5A6B",
-                }}
-              >
-                Los archivos Excel incluyen
-                múltiples hojas: RESUMEN con KPIs,
-                datos detallados, valoración y
-                alertas críticas.
+              <span style={{ fontSize: 11, color: "#4B5A6B" }}>
+                Los archivos Excel incluyen múltiples hojas: RESUMEN con KPIs, datos detallados, valoración y alertas críticas.
               </span>
             </div>
           </div>
         ) : (
-          <div
-            style={{
-              flex: 1,
-              display: "flex",
-              flexDirection: "column",
-              overflow: "hidden",
-            }}
-          >
+          /* ── IMPORT TAB ── */
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            {/* Drop zone */}
             <div
               style={{
                 padding: "16px 24px",
-                borderBottom:
-                  "1px solid #111820",
+                borderBottom: "1px solid #111820",
                 flexShrink: 0,
                 display: "flex",
                 gap: 12,
@@ -779,51 +803,25 @@ export default function ImportExport() {
                 ref={fileRef}
                 type="file"
                 accept=".xlsx,.xls,.csv"
-                style={{
-                  display: "none",
-                }}
+                style={{ display: "none" }}
                 onChange={handleFile}
               />
-
-              <button
-                className="btn-primary"
-                onClick={() =>
-                  fileRef.current?.click()
-                }
-              >
+              <button className="btn-primary" onClick={() => fileRef.current?.click()}>
                 Seleccionar archivo Excel
               </button>
-
               {fileName && (
-                <span
-                  style={{
-                    fontSize: 12,
-                    color: "#00C896",
-                    fontFamily:
-                      "JetBrains Mono",
-                  }}
-                >
-                  {fileName} — {sheets.length}{" "}
-                  hoja
-                  {sheets.length !== 1
-                    ? "s"
-                    : ""}
+                <span style={{ fontSize: 12, color: "#00C896", fontFamily: "JetBrains Mono" }}>
+                  {fileName} — {sheets.length} hoja{sheets.length !== 1 ? "s" : ""}
                 </span>
               )}
-
               {sheet && !importResult && (
                 <button
                   className="btn-secondary"
-                  style={{
-                    marginLeft: "auto",
-                    fontSize: 12,
-                  }}
+                  style={{ marginLeft: "auto", fontSize: 12 }}
                   onClick={doImport}
                   disabled={importing}
                 >
-                  {importing
-                    ? "Importando..."
-                    : `Importar hoja "${sheet.name}" al catálogo`}
+                  {importing ? "Importando..." : `Importar hoja "${sheet.name}" al catálogo`}
                 </button>
               )}
             </div>
@@ -834,71 +832,26 @@ export default function ImportExport() {
                   padding: "10px 24px",
                   flexShrink: 0,
                   background: "#08120E",
-                  borderBottom:
-                    "1px solid #111820",
+                  borderBottom: "1px solid #111820",
                 }}
               >
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 20,
-                    alignItems: "center",
-                  }}
-                >
-                  <span
-                    style={{
-                      fontSize: 12,
-                      color: "#00C896",
-                    }}
-                  >
-                    ✓ Importación completada:
-                  </span>
-
-                  <span
-                    style={{
-                      fontSize: 12,
-                      color: "#34D399",
-                      fontFamily:
-                        "JetBrains Mono",
-                    }}
-                  >
+                <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: "#00C896" }}>✓ Importación completada:</span>
+                  <span style={{ fontSize: 12, color: "#34D399", fontFamily: "JetBrains Mono" }}>
                     {importResult.created} creados
                   </span>
-
-                  <span
-                    style={{
-                      fontSize: 12,
-                      color: "#38BDF8",
-                      fontFamily:
-                        "JetBrains Mono",
-                    }}
-                  >
-                    {importResult.updated}{" "}
-                    actualizados
+                  <span style={{ fontSize: 12, color: "#38BDF8", fontFamily: "JetBrains Mono" }}>
+                    {importResult.updated} actualizados
                   </span>
-
                   {importResult.errors > 0 && (
-                    <span
-                      style={{
-                        fontSize: 12,
-                        color: "#F87171",
-                        fontFamily:
-                          "JetBrains Mono",
-                      }}
-                    >
+                    <span style={{ fontSize: 12, color: "#F87171", fontFamily: "JetBrains Mono" }}>
                       {importResult.errors} errores
                     </span>
                   )}
-
                   <button
                     className="btn-secondary"
-                    style={{
-                      fontSize: 11,
-                      marginLeft: "auto",
-                    }}
-                    onClick={() =>
-                      setImportResult(null)
-                    }
+                    style={{ fontSize: 11, marginLeft: "auto" }}
+                    onClick={() => setImportResult(null)}
                   >
                     Nueva importación
                   </button>
@@ -907,26 +860,12 @@ export default function ImportExport() {
             )}
 
             {sheets.length > 0 && (
-              <div
-                style={{
-                  flex: 1,
-                  display: "flex",
-                  overflow: "hidden",
-                }}
-              >
-                <div
-                  style={{
-                    width: 180,
-                    borderRight:
-                      "1px solid #111820",
-                    overflowY: "auto",
-                    flexShrink: 0,
-                  }}
-                >
+              <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+                {/* Sheet selector */}
+                <div style={{ width: 180, borderRight: "1px solid #111820", overflowY: "auto", flexShrink: 0 }}>
                   <div
                     style={{
-                      padding:
-                        "10px 12px 6px",
+                      padding: "10px 12px 6px",
                       fontSize: 9.5,
                       color: "#2D4050",
                       fontFamily: "Outfit",
@@ -937,349 +876,146 @@ export default function ImportExport() {
                   >
                     HOJAS ({sheets.length})
                   </div>
-
-                  {sheets.map(
-                    (item, index) => (
-                      <button
-                        key={item.name}
-                        onClick={() =>
-                          setActiveSheet(index)
-                        }
+                  {sheets.map((s, i) => (
+                    <button
+                      key={s.name}
+                      onClick={() => setActiveSheet(i)}
+                      style={{
+                        width: "100%",
+                        background: activeSheet === i ? "rgba(0,200,150,0.08)" : "none",
+                        border: "none",
+                        borderLeft: activeSheet === i ? "2px solid #00C896" : "2px solid transparent",
+                        padding: "8px 12px",
+                        cursor: "pointer",
+                        textAlign: "left",
+                      }}
+                    >
+                      <div
                         style={{
-                          width: "100%",
-                          background:
-                            activeSheet ===
-                            index
-                              ? "rgba(0,200,150,0.08)"
-                              : "none",
-                          border: "none",
-                          borderLeft:
-                            activeSheet ===
-                            index
-                              ? "2px solid #00C896"
-                              : "2px solid transparent",
-                          padding: "8px 12px",
-                          cursor: "pointer",
-                          textAlign: "left",
+                          fontSize: 12,
+                          fontFamily: "Outfit",
+                          fontWeight: 600,
+                          color: activeSheet === i ? "#00C896" : "#94A3B8",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
                         }}
                       >
-                        <div
-                          style={{
-                            fontSize: 12,
-                            fontFamily: "Outfit",
-                            fontWeight: 600,
-                            color:
-                              activeSheet ===
-                              index
-                                ? "#00C896"
-                                : "#94A3B8",
-                            whiteSpace:
-                              "nowrap",
-                            overflow: "hidden",
-                            textOverflow:
-                              "ellipsis",
-                          }}
-                        >
-                          {item.name}
-                        </div>
-
-                        <div
-                          style={{
-                            fontSize: 10,
-                            color: "#4B5A6B",
-                            fontFamily:
-                              "JetBrains Mono",
-                          }}
-                        >
-                          {item.rows.length} filas ·{" "}
-                          {
-                            item.headers.filter(
-                              Boolean
-                            ).length
-                          }{" "}
-                          cols
-                        </div>
-                      </button>
-                    )
-                  )}
+                        {s.name}
+                      </div>
+                      <div style={{ fontSize: 10, color: "#4B5A6B", fontFamily: "JetBrains Mono" }}>
+                        {s.previewRows.length} filas · {s.columnCount} cols
+                      </div>
+                    </button>
+                  ))}
                 </div>
 
+                {/* Sheet viewer */}
                 {sheet && (
-                  <div
-                    style={{
-                      flex: 1,
-                      display: "flex",
-                      flexDirection: "column",
-                      overflow: "hidden",
-                    }}
-                  >
+                  <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                    {/* Sheet meta */}
                     <div
                       style={{
                         padding: "10px 16px",
-                        borderBottom:
-                          "1px solid #111820",
+                        borderBottom: "1px solid #111820",
                         flexShrink: 0,
                         display: "flex",
                         gap: 20,
                         alignItems: "center",
                       }}
                     >
-                      <div
-                        style={{
-                          fontFamily: "Outfit",
-                          fontSize: 13,
-                          fontWeight: 700,
-                          color: "#E2E8F0",
-                        }}
-                      >
+                      <div style={{ fontFamily: "Outfit", fontSize: 13, fontWeight: 700, color: "#E2E8F0" }}>
                         {sheet.name}
                       </div>
-
-                      <div
-                        style={{
-                          fontSize: 11,
-                          color: "#4B5A6B",
-                          fontFamily:
-                            "JetBrains Mono",
-                        }}
-                      >
-                        {sheet.rows.length} filas ·{" "}
-                        {
-                          sheet.headers.filter(
-                            Boolean
-                          ).length
-                        }{" "}
-                        columnas
+                      <div style={{ fontSize: 11, color: "#4B5A6B", fontFamily: "JetBrains Mono" }}>
+                        {sheet.previewRows.length} filas · {sheet.columnCount} columnas
                       </div>
-
-                      <div
-                        style={{
-                          display: "flex",
-                          gap: 6,
-                          marginLeft: "auto",
-                          flexWrap: "wrap",
-                        }}
-                      >
-                        {sheet.headers
-                          .filter(Boolean)
-                          .map(
-                            (header) => (
-                              <span
-                                key={header}
-                                style={{
-                                  fontSize: 9.5,
-                                  padding:
-                                    "2px 7px",
-                                  background:
-                                    "#0A1218",
-                                  border:
-                                    "1px solid #1A2232",
-                                  borderRadius: 3,
-                                  color:
-                                    "#60A5FA",
-                                  fontFamily:
-                                    "JetBrains Mono",
-                                }}
-                              >
-                                {header.slice(
-                                  0,
-                                  24
-                                )}
-                              </span>
-                            )
-                          )}
+                      <div style={{ marginLeft: "auto", fontSize: 10.5, color: "#00C896" }}>
+                        Vista original del archivo
                       </div>
                     </div>
 
-                    <div
-                      style={{
-                        flex: 1,
-                        overflowX: "auto",
-                        overflowY: "auto",
-                      }}
-                    >
-                      <table
-                        style={{
-                          width: "max-content",
-                          minWidth: "100%",
-                          borderCollapse:
-                            "collapse",
-                        }}
-                      >
-                        <thead
-                          style={{
-                            position: "sticky",
-                            top: 0,
-                            background:
-                              "#0A0F16",
-                            zIndex: 2,
-                          }}
-                        >
+                    {/* Data table */}
+                    <div style={{ flex: 1, overflowX: "auto", overflowY: "auto" }}>
+                      <table style={{ width: "max-content", minWidth: "100%", borderCollapse: "collapse" }}>
+                        <thead style={{ position: "sticky", top: 0, background: "#0A0F16", zIndex: 2 }}>
                           <tr>
                             <th
                               style={{
-                                padding:
-                                  "8px 10px",
+                                padding: "8px 10px",
                                 fontSize: 9.5,
-                                fontFamily:
-                                  "JetBrains Mono",
-                                color:
-                                  "#2D4050",
-                                borderBottom:
-                                  "1px solid #1A2232",
-                                textAlign:
-                                  "left",
+                                fontFamily: "JetBrains Mono",
+                                color: "#2D4050",
+                                borderBottom: "1px solid #1A2232",
+                                textAlign: "left",
                                 minWidth: 36,
                               }}
                             >
                               #
                             </th>
-
-                            {sheet.headers.map(
-                              (
-                                header,
-                                index
-                              ) => (
-                                <th
-                                  key={index}
-                                  style={{
-                                    padding:
-                                      "8px 12px",
-                                    fontSize: 10,
-                                    fontFamily:
-                                      "Outfit",
-                                    fontWeight: 700,
-                                    color:
-                                      "#4B5A6B",
-                                    borderBottom:
-                                      "1px solid #1A2232",
-                                    textAlign:
-                                      "left",
-                                    whiteSpace:
-                                      "nowrap",
-                                    letterSpacing:
-                                      "0.05em",
-                                    textTransform:
-                                      "uppercase",
-                                    minWidth: 110,
-                                  }}
-                                >
-                                  {header ||
-                                    `Col ${
-                                      index + 1
-                                    }`}
-                                </th>
-                              )
-                            )}
-                          </tr>
-                        </thead>
-
-                        <tbody>
-                          {sheet.rows.map(
-                            (
-                              row,
-                              rowIndex
-                            ) => (
-                              <tr
-                                key={rowIndex}
+                            {Array.from({ length: sheet.columnCount }, (_, i) => (
+                              <th
+                                key={i}
                                 style={{
-                                  background:
-                                    rowIndex %
-                                      2 ===
-                                    0
-                                      ? "transparent"
-                                      : "#09111A",
+                                  padding: "8px 12px",
+                                  fontSize: 10,
+                                  fontFamily: "Outfit",
+                                  fontWeight: 700,
+                                  color: "#4B5A6B",
+                                  borderBottom: "1px solid #1A2232",
+                                  textAlign: "left",
+                                  whiteSpace: "nowrap",
+                                  letterSpacing: "0.05em",
+                                  textTransform: "uppercase",
+                                  minWidth: 110,
                                 }}
                               >
-                                <td
-                                  style={{
-                                    padding:
-                                      "7px 10px",
-                                    fontSize: 10,
-                                    color:
-                                      "#2D4050",
-                                    borderBottom:
-                                      "1px solid #0D1520",
-                                    fontFamily:
-                                      "JetBrains Mono",
-                                    textAlign:
-                                      "right",
-                                  }}
-                                >
-                                  {rowIndex + 1}
-                                </td>
-
-                                {sheet.headers.map(
-                                  (
-                                    _,
-                                    columnIndex
-                                  ) => {
-                                    const value =
-                                      row[
-                                        columnIndex
-                                      ] || "";
-
-                                    const isDate =
-                                      /^\d{4}-\d{2}-\d{2}$/.test(
-                                        value
-                                      );
-
-                                    const isNumber =
-                                      !isDate &&
-                                      value !== "" &&
-                                      !isNaN(
-                                        Number(value)
-                                      );
-
-                                    const isLot =
-                                      /^(LOT|LOTE|KTF|SFB|GQ|GK|LT|[A-Z]{1,4}\d)/i.test(
-                                        value
-                                      ) &&
-                                      value.length > 3;
-
-                                    return (
-                                      <td
-                                        key={
-                                          columnIndex
-                                        }
-                                        style={{
-                                          padding:
-                                            "7px 12px",
-                                          fontSize:
-                                            11.5,
-                                          borderBottom:
-                                            "1px solid #0D1520",
-                                          fontFamily:
-                                            isNumber ||
-                                            isDate
-                                              ? "JetBrains Mono"
-                                              : "Inter, sans-serif",
-                                          color:
-                                            isDate
-                                              ? "#00C896"
-                                              : isLot
-                                                ? "#A78BFA"
-                                                : isNumber
-                                                  ? "#94A3B8"
-                                                  : "#D1D9E2",
-                                          whiteSpace:
-                                            "nowrap",
-                                          maxWidth:
-                                            220,
-                                          overflow:
-                                            "hidden",
-                                          textOverflow:
-                                            "ellipsis",
-                                        }}
-                                      >
-                                        {value}
-                                      </td>
-                                    );
-                                  }
-                                )}
-                              </tr>
-                            )
-                          )}
+                                {columnName(i)}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sheet.previewRows.map((row, ri) => (
+                            <tr key={ri} style={{ background: ri % 2 === 0 ? "transparent" : "#09111A" }}>
+                              <td
+                                style={{
+                                  padding: "7px 10px",
+                                  fontSize: 10,
+                                  color: "#2D4050",
+                                  borderBottom: "1px solid #0D1520",
+                                  fontFamily: "JetBrains Mono",
+                                  textAlign: "right",
+                                }}
+                              >
+                                {ri + 1}
+                              </td>
+                              {Array.from({ length: sheet.columnCount }, (_, ci) => {
+                                const val = row[ci] || "";
+                                const isDate = /^\d{4}-\d{2}-\d{2}$/.test(val);
+                                const isNum = !isDate && val !== "" && !isNaN(Number(val));
+                                const isLot = /^(LOT|LOTE|KTF|SFB|GQ|GK|LT|[A-Z]{1,4}\d)/i.test(val) && val.length > 3;
+                                return (
+                                  <td
+                                    key={ci}
+                                    style={{
+                                      padding: "7px 12px",
+                                      fontSize: 11.5,
+                                      borderBottom: "1px solid #0D1520",
+                                      fontFamily: isNum || isDate ? "JetBrains Mono" : "Inter, sans-serif",
+                                      color: isDate ? "#00C896" : isLot ? "#A78BFA" : isNum ? "#94A3B8" : "#D1D9E2",
+                                      whiteSpace: "nowrap",
+                                      maxWidth: 220,
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                    }}
+                                  >
+                                    {val}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
                         </tbody>
                       </table>
                     </div>
@@ -1305,8 +1041,7 @@ export default function ImportExport() {
                     height: 60,
                     borderRadius: 12,
                     background: "#0A1218",
-                    border:
-                      "2px dashed #1A2232",
+                    border: "2px dashed #1A2232",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -1316,43 +1051,13 @@ export default function ImportExport() {
                 >
                   ⇅
                 </div>
-
-                <div
-                  style={{
-                    fontFamily: "Outfit",
-                    fontSize: 14,
-                    fontWeight: 600,
-                    color: "#4B5A6B",
-                  }}
-                >
-                  Selecciona un archivo Excel
-                  (.xlsx)
+                <div style={{ fontFamily: "Outfit", fontSize: 14, fontWeight: 600, color: "#4B5A6B" }}>
+                  Selecciona un archivo Excel (.xlsx)
                 </div>
-
-                <div
-                  style={{
-                    fontSize: 11,
-                    color: "#2D4050",
-                    textAlign: "center",
-                    maxWidth: 340,
-                  }}
-                >
-                  El sistema detecta
-                  automáticamente todas las hojas,
-                  columnas y tipos de datos.
-                  Compatible con cualquier
-                  estructura de Excel.
+                <div style={{ fontSize: 11, color: "#2D4050", textAlign: "center", maxWidth: 340 }}>
+                  El sistema detecta automáticamente todas las hojas, columnas y tipos de datos. Compatible con cualquier estructura de Excel.
                 </div>
-
-                <button
-                  className="btn-secondary"
-                  style={{
-                    fontSize: 12,
-                  }}
-                  onClick={() =>
-                    fileRef.current?.click()
-                  }
-                >
+                <button className="btn-secondary" style={{ fontSize: 12 }} onClick={() => fileRef.current?.click()}>
                   Explorar archivos
                 </button>
               </div>

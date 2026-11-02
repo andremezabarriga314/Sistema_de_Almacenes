@@ -1,0 +1,399 @@
+import { useMemo, useState } from "react";
+import { useApp } from "../store/AppContext";
+import { analyzeWorkbook } from "../lib/excelKardex";
+import {
+  ImportedSheetTable,
+  analyzeSheet,
+  displayHeaders,
+  filterSheetRows,
+  normText,
+} from "./ImportedSheetView";
+
+// Hojas que no deben mostrarse.
+const HIDDEN_SHEETS = ["alkathymar"];
+
+const isVisibleSheet = (sheet: any) =>
+  !HIDDEN_SHEETS.includes(String(sheet?.name ?? "").trim().toLowerCase());
+
+// Columnas que debe mostrar la sección Lotes, en este orden.
+// "exact" = nombre de encabezado igual; "contains" = el encabezado lo contiene.
+const TARGETS: {
+  label: string;
+  exact: string[];
+  contains: string[];
+  not?: string[];
+}[] = [
+  {
+    label: "ID Lote",
+    exact: ["id lote", "id de lote", "idlote", "id"],
+    contains: ["id lote"],
+  },
+  {
+    label: "Num. Lote",
+    exact: ["num lote", "numero lote", "numero de lote", "n lote", "nro lote", "no lote", "lote"],
+    contains: ["num lote", "numero de lote", "numero lote", "nro lote", "lote"],
+    not: ["id ", "fecha", "estado", "dias", "vencimiento", "produccion"],
+  },
+  {
+    label: "Código",
+    exact: ["codigo", "cod", "sku", "codigo producto"],
+    contains: ["codigo"],
+  },
+  {
+    label: "Alimento",
+    exact: ["alimento", "producto", "descripcion", "nombre"],
+    contains: ["alimento", "producto", "descripcion"],
+  },
+  {
+    label: "Presentación",
+    exact: ["presentacion"],
+    contains: ["presentacion"],
+  },
+  {
+    label: "Proveedor",
+    exact: ["proveedor"],
+    contains: ["proveedor"],
+  },
+  {
+    label: "Vencimiento",
+    exact: ["vencimiento", "fecha de vencimiento", "fecha vencimiento", "vence"],
+    contains: ["vencimiento"],
+    not: ["dias", "estado"],
+  },
+  {
+    label: "Días Restantes",
+    exact: ["dias restantes", "dias"],
+    contains: ["dias rest", "dias para", "dias por", "dias de vida", "dias venc"],
+  },
+  {
+    label: "Unidades",
+    exact: ["unidades", "unidad", "cantidad", "stock", "saldo"],
+    contains: ["unidades", "cantidad"],
+  },
+  {
+    label: "Recibido",
+    exact: ["recibido", "fecha recibido", "recepcion", "fecha de recepcion", "fecha recepcion", "ingreso"],
+    contains: ["recibido", "recepcion"],
+  },
+  {
+    label: "Fecha de Producción",
+    exact: ["fecha de produccion", "fecha produccion", "produccion", "f produccion", "fecha de elaboracion", "elaboracion"],
+    contains: ["produccion", "elaboracion"],
+  },
+  {
+    label: "Estado",
+    exact: ["estado"],
+    contains: ["estado"],
+  },
+];
+
+const clean = (value: unknown) =>
+  normText(value).replace(/[^a-z0-9]+/g, " ").trim();
+
+// Convierte un texto de fecha (dd/mm/aaaa o aaaa-mm-dd) en Date.
+function parseDate(value: string): Date | null {
+  const t = String(value ?? "").trim();
+  const make = (y: number, m: number, d: number) => {
+    const date = new Date(y, m - 1, d);
+    return date.getFullYear() === y && date.getMonth() === m - 1 && date.getDate() === d
+      ? date
+      : null;
+  };
+
+  let m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(t);
+  if (m) return make(Number(m[1]), Number(m[2]), Number(m[3]));
+
+  m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/.exec(t);
+  if (m) {
+    let y = Number(m[3]);
+    if (y < 100) y += 2000;
+    return make(y, Number(m[2]), Number(m[1]));
+  }
+
+  return null;
+}
+
+// Días que faltan para el vencimiento (misma regla que la tabla de Lotes).
+function daysLeftLabel(expiry: string): string {
+  const date = parseDate(expiry);
+  if (!date) return "";
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const days = Math.floor((date.getTime() - today.getTime()) / 86400000);
+  return days < 0 ? "VENCIDO" : `${days}d`;
+}
+
+type Match = { index: number; label: string };
+
+// Busca, para cada columna pedida, la columna del Excel que le corresponde.
+// Si el Excel no trae "Días Restantes", se agrega una columna calculada
+// (índice = headers.length) a partir de Vencimiento.
+function matchColumns(headers: string[]) {
+  const cleaned = headers.map(clean);
+  const used = new Set<number>();
+  const found: Match[] = [];
+  let expiryIndex = -1;
+  let daysIndex = -1;
+
+  for (const target of TARGETS) {
+    let index = cleaned.findIndex((h, i) => !used.has(i) && target.exact.includes(h));
+
+    if (index < 0) {
+      index = cleaned.findIndex(
+        (h, i) =>
+          !used.has(i) &&
+          h !== "" &&
+          target.contains.some((w) => h.includes(w)) &&
+          !(target.not ?? []).some((x) => h.includes(x))
+      );
+    }
+
+    if (index >= 0) {
+      used.add(index);
+      found.push({ index, label: target.label });
+      if (target.label === "Vencimiento") expiryIndex = index;
+      if (target.label === "Días Restantes") daysIndex = index;
+    } else if (target.label === "Días Restantes" && expiryIndex >= 0) {
+      daysIndex = headers.length;
+      found.push({ index: daysIndex, label: target.label });
+    } else if (target.label === "Proveedor") {
+      // El Excel no la trae: se agrega y se completa con los datos del sistema.
+      found.push({ index: headers.length + 1, label: target.label });
+    } else if (target.label === "Presentación") {
+      found.push({ index: headers.length + 2, label: target.label });
+    }
+  }
+
+  return { found, expiryIndex, computedDays: daysIndex === headers.length ? daysIndex : -1 };
+}
+
+export default function ExcelLotsPanel() {
+  const {
+    importedExcelFileName,
+    importedExcelSheets,
+    products,
+    suppliers,
+    lots,
+  } = useApp();
+  const [search, setSearch] = useState("");
+
+  // Elige la hoja cuyos encabezados coinciden con más columnas de Lotes.
+  const picked = useMemo(() => {
+    let best: {
+      sheet: any;
+      analysis: ReturnType<typeof analyzeSheet>;
+      matches: Match[];
+      expiryIndex: number;
+      computedDays: number;
+      real: number;
+    } | null = null;
+
+    for (const sheet of importedExcelSheets.filter(isVisibleSheet)) {
+      const analysis = analyzeSheet(sheet);
+      if (analysis.headerRow < 0) continue;
+
+      const headers = displayHeaders(
+        analysis.headerCells,
+        analysis.rows,
+        analysis.banner[analysis.banner.length - 1]
+      );
+      const { found: matches, expiryIndex, computedDays } = matchColumns(headers);
+
+      // Solo cuentan las columnas que realmente existen en la hoja (no las agregadas).
+      const real = matches.filter((m) => m.index < headers.length).length;
+
+      if (real >= 4 && (!best || real > best.real)) {
+        best = { sheet, analysis, matches, expiryIndex, computedDays, real };
+      }
+    }
+
+    return best;
+  }, [importedExcelSheets]);
+
+  // El filtro solo decide qué filas mostrar; no cambia sus valores.
+  const sheetRows = useMemo(
+    () => (picked ? filterSheetRows(picked.analysis, search, "Todos") : []),
+    [picked, search]
+  );
+
+  // Datos de apoyo: lotes y productos reconocidos en el Excel importado.
+  const workbook = useMemo(
+    () => analyzeWorkbook(importedExcelSheets),
+    [importedExcelSheets]
+  );
+
+  // Completa Proveedor y Presentación cuando la celda viene vacía (o la columna no existe)
+  // y agrega "Días Restantes" calculado solo cuando el Excel no la trae.
+  const viewRows = useMemo(() => {
+    if (!picked) return sheetRows;
+
+    const col = (label: string) =>
+      picked.matches.find((m) => m.label === label)?.index ?? -1;
+
+    const iName = col("Alimento");
+    const iLote = col("Num. Lote");
+    const iCode = col("Código");
+    const iProv = col("Proveedor");
+    const iPres = col("Presentación");
+
+    const supplierName = (id?: string) => {
+      const value = String(id ?? "").trim();
+      if (!value) return "";
+      const found: any = suppliers.find((s: any) => String(s.id).trim() === value);
+      return String(found?.name ?? found?.nombre ?? "").trim();
+    };
+
+    return sheetRows.map(({ row, n }) => {
+      const extended = [...row];
+
+      const name = normText(row[iName]);
+      const lote = normText(row[iLote]);
+      const code = String(row[iCode] ?? "").trim();
+
+      const wbProduct = name
+        ? workbook.products.find((p) => normText(p.nombre) === name)
+        : undefined;
+
+      const wbLot = lote
+        ? workbook.lots.find(
+            (l) => normText(l.lote) === lote && (!name || normText(l.producto) === name)
+          )
+        : undefined;
+
+      const sysProduct = products.find(
+        (p) =>
+          (code && String(p.sku).trim() === code) ||
+          (name && normText(p.name) === name)
+      );
+
+      const sysLot = lote
+        ? lots.find(
+            (l) =>
+              normText(l.lotNumber) === lote &&
+              (!sysProduct || l.productId === sysProduct.id)
+          )
+        : undefined;
+
+      if (iPres >= 0 && !String(row[iPres] ?? "").trim()) {
+        extended[iPres] =
+          wbLot?.presentacion ||
+          wbProduct?.presentacion ||
+          String(sysProduct?.presentation ?? "").trim();
+      }
+
+      if (iProv >= 0 && !String(row[iProv] ?? "").trim()) {
+        extended[iProv] =
+          wbLot?.proveedor ||
+          supplierName(sysLot?.supplierId) ||
+          wbProduct?.proveedor ||
+          supplierName(sysProduct?.supplierId);
+      }
+
+      if (picked.computedDays >= 0) {
+        extended[picked.computedDays] = daysLeftLabel(row[picked.expiryIndex]);
+      }
+
+      return { row: extended, n };
+    });
+  }, [picked, sheetRows, workbook, products, suppliers, lots]);
+
+  if (!picked) return null;
+
+  const columns = picked.matches.map((m) => m.index);
+  const labels: Record<number, string> = {};
+  picked.matches.forEach((m) => {
+    labels[m.index] = m.label;
+  });
+
+  return (
+    <div
+      className="wms-card"
+      style={{ margin: 24, padding: 0, overflow: "hidden" }}
+    >
+      <div
+        style={{
+          padding: "20px 24px",
+          borderBottom: "1px solid #1B2935",
+          background: "#0B141D",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 16,
+            flexWrap: "wrap",
+          }}
+        >
+          <div>
+            <div
+              style={{
+                color: "#E2E8F0",
+                fontSize: 16,
+                fontWeight: 700,
+                fontFamily: "Outfit",
+              }}
+            >
+              Lotes del Excel importado
+            </div>
+            <div style={{ color: "#8295A8", fontSize: 11, marginTop: 5 }}>
+              Archivo: {importedExcelFileName || "Excel importado"}
+            </div>
+          </div>
+
+          <div
+            style={{
+              padding: "7px 11px",
+              border: "1px solid #21483B",
+              borderRadius: 7,
+              background: "#0D261F",
+              color: "#6EE7B7",
+              fontSize: 11,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {sheetRows.length} filas visibles
+          </div>
+        </div>
+      </div>
+
+      <div
+        style={{
+          padding: "14px 24px",
+          borderBottom: "1px solid #1B2935",
+          background: "#0B141D",
+        }}
+      >
+        <input
+          type="text"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Buscar en los datos importados..."
+          style={{
+            width: "100%",
+            boxSizing: "border-box",
+            padding: "11px 13px",
+            border: "1px solid #263746",
+            borderRadius: 7,
+            outline: "none",
+            background: "#070D12",
+            color: "#E2E8F0",
+            fontSize: 12,
+          }}
+        />
+      </div>
+
+      <div style={{ width: "100%", maxHeight: 480, overflow: "auto" }}>
+        <ImportedSheetTable
+          analysis={picked.analysis}
+          rows={viewRows}
+          columns={columns}
+          labels={labels}
+        />
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,233 @@
+import { useState } from "react";
+import { useApp } from "../store/AppContext";
+import { exportLotsExcel } from "../lib/exportExcel";
+import { exportLotsPDF } from "../lib/exportPDF";
+
+export default function Lots() {
+  const { lots, products, suppliers, deleteLot } = useApp();
+  const [search, setSearch] = useState("");
+  const [filterStatus, setFilterStatus] = useState("Todos");
+  const [selectedLotIds, setSelectedLotIds] = useState<string[]>([]);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteScope, setDeleteScope] = useState<"selected" | "all">("selected");
+
+  const today = new Date();
+
+  const enriched = lots.map((l) => {
+    const daysLeft = Math.floor((new Date(l.expiryDate).getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    let status: string = l.status;
+    if (l.qty <= 0) status = "Agotado";
+    else if (daysLeft < 0) status = "Vencido";
+    else if (daysLeft <= 7) status = "Critico";
+    else if (daysLeft <= 30) status = "Por vencer";
+    else status = "Vigente";
+    return { ...l, daysLeft, statusLabel: status };
+  });
+
+  const filtered = enriched.filter((l) => {
+    const supplierName = suppliers.find((supplier) => supplier.id === l.supplierId)?.name || "";
+    const matchSearch = !search || l.productName.toLowerCase().includes(search.toLowerCase()) || l.lotNumber.toLowerCase().includes(search.toLowerCase()) || l.sku.toLowerCase().includes(search.toLowerCase()) || supplierName.toLowerCase().includes(search.toLowerCase());
+    const matchStatus = filterStatus === "Todos" || l.statusLabel === filterStatus;
+    return matchSearch && matchStatus;
+  });
+
+  const badgeClass: Record<string, string> = {
+    Vigente: "badge-green",
+    "Por vencer": "badge-amber",
+    Critico: "badge-red",
+    Vencido: "badge-red",
+    Agotado: "badge-gray",
+  };
+
+  const expiredCount = enriched.filter((l) => l.statusLabel === "Vencido").length;
+  const criticalCount = enriched.filter((l) => l.statusLabel === "Critico").length;
+  const soonCount = enriched.filter((l) => l.statusLabel === "Por vencer").length;
+  const validCount = enriched.filter((l) => l.statusLabel === "Vigente").length;
+
+  const toggleLotSelection = (lotId: string) => {
+    setSelectedLotIds((current) =>
+      current.includes(lotId)
+        ? current.filter((id) => id !== lotId)
+        : [...current, lotId]
+    );
+  };
+
+  const toggleAllVisibleLots = () => {
+    const visibleIds = filtered.map((lot) => lot.id);
+    const allSelected =
+      visibleIds.length > 0 &&
+      visibleIds.every((id) => selectedLotIds.includes(id));
+    setSelectedLotIds((current) =>
+      allSelected
+        ? current.filter((id) => !visibleIds.includes(id))
+        : [...new Set([...current, ...visibleIds])]
+    );
+  };
+
+  const confirmLotDeletion = () => {
+    const ids = deleteScope === "all" ? lots.map((lot) => lot.id) : selectedLotIds;
+    ids.forEach((id) => deleteLot(id));
+    setSelectedLotIds([]);
+    setShowDeleteModal(false);
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+      <div style={{ padding: "20px 24px 16px", borderBottom: "1px solid #111820", flexShrink: 0 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
+          <div>
+            <h1 style={{ fontFamily: "Outfit, sans-serif", fontSize: 20, fontWeight: 700, color: "#E2E8F0" }}>Control de Lotes</h1>
+            <div style={{ fontSize: 11, color: "#4B5A6B", fontFamily: "JetBrains Mono" }}>{filtered.length} lotes</div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ background: "#08120E", border: "1px solid #0D3D26", borderRadius: 5, padding: "5px 12px", fontSize: 11, color: "#00C896", fontFamily: "JetBrains Mono" }}>{validCount} VIGENTE{validCount === 1 ? "" : "S"}</div>
+            {expiredCount > 0 && <div style={{ background: "#1E0808", border: "1px solid #3D1010", borderRadius: 5, padding: "5px 12px", fontSize: 11, color: "#F87171", fontFamily: "JetBrains Mono" }}>{expiredCount} VENCIDOS</div>}
+            {criticalCount > 0 && <div style={{ background: "#1E0808", border: "1px solid #3D1010", borderRadius: 5, padding: "5px 12px", fontSize: 11, color: "#F87171", fontFamily: "JetBrains Mono" }}>{criticalCount} CRITICO{criticalCount > 1 ? "S" : ""} (&lt;7d)</div>}
+            {soonCount > 0 && <div style={{ background: "#2A1E08", border: "1px solid #3D2C10", borderRadius: 5, padding: "5px 12px", fontSize: 11, color: "#FBBF24", fontFamily: "JetBrains Mono" }}>{soonCount} POR VENCER</div>}
+            <button
+              className="btn-danger"
+              style={{ fontSize: 11 }}
+              onClick={() => {
+                setDeleteScope(selectedLotIds.length > 0 ? "selected" : "all");
+                setShowDeleteModal(true);
+              }}
+              disabled={!lots.length}
+            >
+              Eliminar lotes
+            </button>
+            <button className="btn-secondary" style={{ fontSize: 11 }} onClick={() => exportLotsExcel(lots, suppliers)} disabled={lots.length === 0}>Excel</button>
+            <button className="btn-secondary" style={{ fontSize: 11 }} onClick={() => exportLotsPDF(lots)} disabled={lots.length === 0}>PDF</button>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input className="wms-input" placeholder="Buscar por lote, alimento, codigo..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: 280 }} />
+          <select className="wms-select" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
+            <option>Todos</option>
+            <option>Vigente</option>
+            <option>Por vencer</option>
+            <option>Critico</option>
+            <option value="Vencido">Vencidos</option>
+            <option>Agotado</option>
+          </select>
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflowY: "auto" }}>
+        {lots.length === 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: 12 }}>
+            <div style={{ fontSize: 40, color: "#1A2232" }}>L</div>
+            <div style={{ fontFamily: "Outfit", fontSize: 14, color: "#4B5A6B" }}>Sin lotes registrados</div>
+            <div style={{ fontSize: 11, color: "#2D4050" }}>Los lotes se crean automaticamente al registrar una entrada</div>
+          </div>
+        ) : (
+          <table className="wms-table">
+            <thead style={{ position: "sticky", top: 0, background: "#080B10", zIndex: 1 }}>
+              <tr>
+                <th style={{ width: 38, textAlign: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={
+                      filtered.length > 0 &&
+                      filtered.every((lot) => selectedLotIds.includes(lot.id))
+                    }
+                    onChange={toggleAllVisibleLots}
+                    aria-label="Seleccionar todos los lotes visibles"
+                  />
+                </th>
+                <th>ID Lote</th>
+                <th>Num. Lote</th>
+                <th>Codigo</th>
+                <th>Alimento</th>
+                <th>Proveedor</th>
+                <th>Vencimiento</th>
+                <th style={{ textAlign: "right" }}>Dias Restantes</th>
+                <th style={{ textAlign: "right" }}>Qty Restante</th>
+                <th>Unidad</th>
+                <th style={{ textAlign: "right" }}>Costo Unit.</th>
+                <th>Recibido</th>
+                <th>Estado</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.sort((a, b) => a.expiryDate.localeCompare(b.expiryDate)).map((l) => {
+                const prod = products.find((p) => p.id === l.productId);
+                const isUrgent = l.statusLabel === "Vencido" || l.statusLabel === "Critico";
+                return (
+                  <tr key={l.id} style={{ background: isUrgent ? "rgba(239,68,68,0.03)" : undefined }}>
+                    <td style={{ textAlign: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={selectedLotIds.includes(l.id)}
+                        onChange={() => toggleLotSelection(l.id)}
+                        aria-label={`Seleccionar lote ${l.lotNumber}`}
+                      />
+                    </td>
+                    <td className="num" style={{ color: "#4B5A6B", fontSize: 10 }}>{l.id}</td>
+                    <td className="num" style={{ color: "#A78BFA", fontWeight: 600 }}>{l.lotNumber}</td>
+                    <td className="num">{l.sku}</td>
+                    <td style={{ fontWeight: 500, color: "#D1D9E2", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis" }}>{l.productName}</td>
+                    <td style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis" }}>{suppliers.find((supplier) => supplier.id === l.supplierId)?.name || "No registrado"}</td>
+                    <td className="num" style={{ color: isUrgent ? "#F87171" : l.statusLabel === "Por vencer" ? "#FBBF24" : "#00C896" }}>{l.expiryDate}</td>
+                    <td className="num" style={{ textAlign: "right", fontWeight: 700, color: l.daysLeft < 0 ? "#F87171" : l.daysLeft <= 7 ? "#F87171" : l.daysLeft <= 30 ? "#FBBF24" : "#00C896" }}>
+                      {l.daysLeft < 0 ? "VENCIDO" : l.daysLeft + "d"}
+                    </td>
+                    <td className="num" style={{ textAlign: "right", fontWeight: 700, color: l.qty === 0 ? "#4B5A6B" : "#E2E8F0" }}>{l.qty}</td>
+                    <td style={{ fontSize: 11 }}>{prod ? prod.unit : "---"}</td>
+                    <td className="num" style={{ textAlign: "right" }}>${l.unitCost.toFixed(2)}</td>
+                    <td className="num">{l.receivedDate}</td>
+                    <td><span className={"badge " + (badgeClass[l.statusLabel] || "badge-gray")}>{l.statusLabel === "Vencido" ? "VENCIDOS" : l.statusLabel}</span></td>
+                    <td style={{ textAlign: "center" }}>
+                      <button className="btn-danger" onClick={() => { if (confirm(`¿Eliminar el lote "${l.lotNumber}"?`)) deleteLot(l.id); }} style={{ padding: "3px 8px", fontSize: 11 }}>Eliminar</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {showDeleteModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div className="wms-card" style={{ width: 470 }}>
+            <div style={{ padding: "18px 20px", borderBottom: "1px solid #1A2232", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <h2 style={{ margin: 0, fontFamily: "Outfit", fontSize: 16, color: "#E2E8F0" }}>Eliminar lotes</h2>
+                <div style={{ marginTop: 4, fontSize: 11, color: "#64748B" }}>Selecciona los lotes que deseas eliminar.</div>
+              </div>
+              <button onClick={() => setShowDeleteModal(false)} style={{ background: "none", border: "none", color: "#64748B", cursor: "pointer", fontSize: 20 }}>×</button>
+            </div>
+
+            <div style={{ padding: 20, display: "grid", gap: 10 }}>
+              <label style={{ display: "flex", gap: 10, alignItems: "center", padding: "12px 14px", border: deleteScope === "selected" ? "1px solid #00C896" : "1px solid #1A2232", borderRadius: 6, background: deleteScope === "selected" ? "rgba(0,200,150,0.06)" : "#0A0F17", cursor: selectedLotIds.length ? "pointer" : "not-allowed", opacity: selectedLotIds.length ? 1 : 0.5 }}>
+                <input type="radio" name="delete-lot-scope" checked={deleteScope === "selected"} disabled={!selectedLotIds.length} onChange={() => setDeleteScope("selected")} />
+                <span>
+                  <span style={{ display: "block", color: "#E2E8F0", fontFamily: "Outfit", fontSize: 13, fontWeight: 600 }}>Eliminar seleccionados</span>
+                  <span style={{ display: "block", marginTop: 2, color: "#64748B", fontSize: 11 }}>{selectedLotIds.length} lote{selectedLotIds.length === 1 ? "" : "s"} seleccionado{selectedLotIds.length === 1 ? "" : "s"}</span>
+                </span>
+              </label>
+
+              <label style={{ display: "flex", gap: 10, alignItems: "center", padding: "12px 14px", border: deleteScope === "all" ? "1px solid #EF4444" : "1px solid #1A2232", borderRadius: 6, background: deleteScope === "all" ? "rgba(239,68,68,0.06)" : "#0A0F17", cursor: "pointer" }}>
+                <input type="radio" name="delete-lot-scope" checked={deleteScope === "all"} onChange={() => setDeleteScope("all")} />
+                <span>
+                  <span style={{ display: "block", color: "#F87171", fontFamily: "Outfit", fontSize: 13, fontWeight: 600 }}>Eliminar todos</span>
+                  <span style={{ display: "block", marginTop: 2, color: "#64748B", fontSize: 11 }}>{lots.length} lotes serán eliminados</span>
+                </span>
+              </label>
+
+              <div className="alert-critical" style={{ marginTop: 4, padding: "9px 12px", borderRadius: 5, color: "#FCA5A5", fontSize: 11 }}>
+                Se eliminarán {deleteScope === "all" ? lots.length : selectedLotIds.length} lote{(deleteScope === "all" ? lots.length : selectedLotIds.length) === 1 ? "" : "s"}.
+              </div>
+            </div>
+
+            <div style={{ padding: "14px 20px", borderTop: "1px solid #1A2232", display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button className="btn-secondary" onClick={() => setShowDeleteModal(false)}>Cancelar</button>
+              <button className="btn-danger" onClick={confirmLotDeletion} disabled={deleteScope === "selected" && !selectedLotIds.length}>Confirmar eliminación</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
